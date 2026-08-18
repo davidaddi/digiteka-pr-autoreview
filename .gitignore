@@ -1,0 +1,11 @@
+.env
+.runtime.env
+.pr.diff
+.findings.json
+.run.json
+.work/
+node_modules/
+.run.meta
+repos.yml.tmp
+runners/*
+!runners/.gitkeep

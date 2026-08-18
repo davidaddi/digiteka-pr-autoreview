@@ -1,0 +1,51 @@
+@startuml sequence
+
+actor Admin
+participant "WebServer" as Web
+participant "SyncRepos" as Sync
+participant "RepoRegistry\n(repos.yml)" as Reg
+participant "GitHubProvisioner" as Prov
+participant "RunnerLifecycle" as Life
+participant "GitHub API" as GH
+
+== Ajout d'un repo ==
+
+Admin -> Web : ajoute "org/repo-x"
+Web -> Sync : provision("org/repo-x")
+Sync -> Reg : add(entry)
+Sync -> Prov : commitWorkflow(repo)
+Prov -> GH : PUT contents .github/workflows/review.yml
+Sync -> Prov : setRepoVars(repo)
+Prov -> GH : POST actions/variables
+Sync -> Prov : createRegistrationToken(repo)
+Prov -> GH : POST actions/runners/registration-token
+GH --> Prov : token
+Sync -> Life : start(repo, token)
+Life -> Life : spawn runner process (label hermes-review)
+Life --> Sync : RunnerInstance(pid, up)
+Sync --> Web : "repo-x actif"
+Web --> Admin : statut affiché
+
+== Exécution (commentaire /review sur repo-x) ==
+
+actor Utilisateur
+participant "GitHub" as GHub
+participant "RunnerInstance\n(repo-x)" as Runner
+participant "Dispatcher\ndispatch.mjs" as Disp
+participant "ReviewScript\nreview.sh" as Rev
+participant "Orchestrator +\nFinders/Skeptic/Judge" as Orch
+participant "GitHubPublisher\ngithub.mjs" as Pub
+
+Utilisateur -> GHub : commente "/review" sur PR
+GHub -> Runner : déclenche job (issue_comment)
+Runner -> GHub : réaction 👀
+Runner -> Disp : node dispatch.mjs <pr> review
+Disp -> Rev : bash review.sh <pr> review
+Rev -> Rev : gh pr diff -> .pr.diff
+Rev -> Orch : fan-out finders -> skeptic -> judge
+Orch --> Rev : .findings.json
+Rev --> Disp : exit 0
+Disp -> Pub : node github.mjs post <pr>
+Pub -> GHub : POST /pulls/<pr>/reviews (commentaires + statut)
+GHub --> Utilisateur : review postée sur les lignes
+@enduml

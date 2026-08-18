@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hermes-pr-review</title>
+    <style>
+      :root { color-scheme: light dark; --line: #8883; }
+      body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 2.5rem 1.5rem; max-width: 60rem; margin-inline: auto; }
+      h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+      p.lead { margin: 0 0 2rem; opacity: .7; }
+      form { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
+      input { flex: 1; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: .4rem; background: transparent; color: inherit; font: inherit; }
+      button { padding: .6rem 1rem; border: 1px solid var(--line); border-radius: .4rem; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      button:hover:not(:disabled) { border-color: currentColor; }
+      button:disabled { opacity: .4; cursor: default; }
+      table { width: 100%; border-collapse: collapse; }
+      th { text-align: left; font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; opacity: .6; }
+      th, td { padding: .6rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+      td.repo { font-family: ui-monospace, monospace; }
+      .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .45rem; vertical-align: baseline; }
+      .up { background: #22c55e; } .down { background: #ef4444; } .work { background: #f59e0b; } .off { background: #9ca3af; }
+      .muted { opacity: .55; }
+      pre { margin: .4rem 0 0; padding: .5rem .6rem; background: #8881; border-radius: .3rem; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9rem; overflow: auto; }
+      .error { color: #ef4444; min-height: 1.4rem; }
+    </style>
+  </head>
+  <body>
+    <h1>hermes-pr-review</h1>
+    <p class="lead">Repositories served by this machine. One self-hosted runner per repository, one shared checkout.</p>
+
+    <form id="add">
+      <input id="slug" placeholder="owner/name" autocomplete="off" spellcheck="false" required />
+      <button type="submit">Add repository</button>
+    </form>
+    <p class="error" id="error"></p>
+
+    <table>
+      <thead>
+        <tr><th>Repository</th><th>State</th><th>Runner</th><th>Last sync</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <script>
+      const rows = document.getElementById('rows')
+      const error = document.getElementById('error')
+      const form = document.getElementById('add')
+      const slug = document.getElementById('slug')
+
+      const RUNNER = { up: ['up', 'up'], down: ['down', 'down'] }
+      const JOB = { queued: ['work', 'queued'], running: ['work', 'running'], ok: ['up', 'done'], error: ['down', 'failed'] }
+
+      function dot(kind, label) {
+        return `<span class="dot ${kind}"></span>${label}`
+      }
+
+      function fail(message) {
+        error.textContent = message ?? ''
+      }
+
+      async function call(method, path, body) {
+        const response = await fetch(path, {
+          method,
+          headers: body ? { 'content-type': 'application/json' } : {},
+          body: body ? JSON.stringify(body) : undefined,
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error ?? `${method} ${path} failed`)
+        return data
+      }
+
+      function render(list) {
+        if (!list.length) {
+          rows.innerHTML = '<tr><td colspan="5" class="muted">Nothing registered yet.</td></tr>'
+          return
+        }
+
+        rows.innerHTML = list
+          .map((repo) => {
+            const name = `${repo.owner}/${repo.name}`
+            const runner = repo.status === 'removed' ? ['off', 'n/a'] : (RUNNER[repo.runner] ?? RUNNER.down)
+            const job = repo.job ? JOB[repo.job.state] ?? ['off', repo.job.state] : null
+            const busy = repo.job && (repo.job.state === 'queued' || repo.job.state === 'running')
+            const log = repo.job?.output ? `<pre>${esc(repo.job.output)}</pre>` : ''
+
+            return `<tr>
+              <td class="repo">${esc(name)}</td>
+              <td class="${repo.status === 'removed' ? 'muted' : ''}">${esc(repo.status)}</td>
+              <td>${dot(runner[0], runner[1])}</td>
+              <td>${job ? dot(job[0], `${esc(repo.job.command)} ${job[1]}`) : '<span class="muted">—</span>'}${log}</td>
+              <td><button data-owner="${esc(repo.owner)}" data-name="${esc(repo.name)}" ${busy ? 'disabled' : ''}>${
+                repo.status === 'removed' ? 'Retry removal' : 'Remove'
+              }</button></td>
+            </tr>`
+          })
+          .join('')
+      }
+
+      function esc(text) {
+        return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+      }
+
+      async function refresh() {
+        try {
+          render((await call('GET', '/api/repos')).repos)
+        } catch (problem) {
+          fail(problem.message)
+        }
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault()
+        fail('')
+        const [owner, name] = slug.value.trim().split('/')
+        if (!owner || !name) return fail('Write it as owner/name.')
+        try {
+          await call('POST', '/api/repos', { owner, name })
+          slug.value = ''
+          refresh()
+        } catch (problem) {
+          fail(problem.message)
+        }
+      })
+
+      rows.addEventListener('click', async (event) => {
+        const button = event.target.closest('button')
+        if (!button) return
+        const { owner, name } = button.dataset
+        if (!confirm(`Remove ${owner}/${name}? The workflow file and the runner both go away.`)) return
+        fail('')
+        try {
+          await call('DELETE', `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)
+          refresh()
+        } catch (problem) {
+          fail(problem.message)
+        }
+      })
+
+      refresh()
+      setInterval(refresh, 3000)
+    </script>
+  </body>
+</html>

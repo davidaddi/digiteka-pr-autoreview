@@ -1,0 +1,6 @@
+# Repositories served by the local multi-repo mode.
+# One line per repository: owner/name:status
+# status is pending (to provision), active (provisioned, runner started) or removed (to tear down).
+# src/provisioning/sync-repos.mjs owns this file. The web UI never writes it directly.
+
+repos:

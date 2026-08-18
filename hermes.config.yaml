@@ -1,0 +1,17 @@
+model:
+  provider: openrouter
+  default: moonshotai/kimi-k2.6
+
+fallback_providers:
+  - provider: openrouter
+    model: minimax/minimax-m3
+  - provider: copilot
+    model: gpt-4.1
+
+auxiliary:
+  compression:
+    provider: openrouter
+    fallback_chain:
+      - provider: copilot
+        model: gpt-4.1
+        timeout: 240

@@ -1,0 +1,15 @@
+model: claude-opus-5[1M]
+trigger: /review
+
+agents:
+  - correctness
+  - security
+  - silent-failure
+
+paths:
+  blocking: demo/**
+  advisory: "**"
+
+max_findings: 8
+
+skeptics: 1

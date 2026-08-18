@@ -1,0 +1,97 @@
+@startuml classes
+
+package "Registre & Provisioning" {
+  class RepoRegistry {
+    +path: "repos.yml"
+    +list(): RepoEntry[]
+    +add(owner, name)
+    +remove(owner, name)
+  }
+
+  class RepoEntry {
+    +owner: string
+    +name: string
+    +status: enum {pending, active, removed}
+  }
+
+  class SyncRepos {
+    +syncAll()
+    +provision(entry: RepoEntry)
+    +deprovision(entry: RepoEntry)
+  }
+
+  class GitHubProvisioner {
+    +token: PAT
+    +commitWorkflow(repo)
+    +setRepoVars(repo, provider, model)
+    +createRegistrationToken(repo): string
+    +deleteWorkflow(repo)
+  }
+
+  class RunnerLifecycle {
+    +start(repo): RunnerInstance
+    +stop(repo)
+    +status(repo): "up"|"down"
+  }
+
+  class RunnerInstance {
+    +repo: string
+    +pid: number
+    +workdir: string
+    +label: "hermes-review"
+  }
+
+  class WebServer {
+    +GET /       : liste repos + statut
+    +POST /repos : add
+    +DELETE /repos/:id : remove
+  }
+}
+
+package "Review" {
+  class GithubActionsWorkflow <<review.yml>> {
+    +on: issue_comment
+    +runs-on: [self-hosted, hermes-review]
+  }
+
+  class Dispatcher <<dispatch.mjs>> {
+    +runHermes(repo, pr, action, argument)
+  }
+
+  class ReviewScript <<review.sh>> {
+    +review(pr)
+    +fix(pr)
+    +revert(pr)
+    -checkout_pr(pr): workdir
+  }
+
+  class GitHubPublisher <<github.mjs>> {
+    +post(pr)
+    +say(pr, message)
+    +fail(pr, reason)
+  }
+
+  class Orchestrator
+  class Finder <<correctness|security|silent-failure>>
+  class Skeptic
+  class Judge
+}
+
+RepoRegistry "1" o-- "*" RepoEntry
+WebServer --> SyncRepos : appelle
+SyncRepos --> RepoRegistry : lit/écrit
+SyncRepos --> GitHubProvisioner : provisionne
+SyncRepos --> RunnerLifecycle : démarre/arrête
+RunnerLifecycle "1" o-- "*" RunnerInstance
+
+RunnerInstance ..> GithubActionsWorkflow : exécute le job
+GithubActionsWorkflow --> Dispatcher
+Dispatcher --> ReviewScript
+ReviewScript --> Orchestrator
+Orchestrator --> Finder : fan-out
+Orchestrator --> Skeptic : chaque finding
+Orchestrator --> Judge : dédup + rank
+ReviewScript --> GitHubPublisher
+
+
+@enduml
