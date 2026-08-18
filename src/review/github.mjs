@@ -154,8 +154,9 @@ async function post(pr) {
   const pull = await api('GET', `/pulls/${pr}`)
 
   if (findings.length === 0) {
+    await api('POST', `/issues/${pr}/comments`, { body: '## 🔎 Review\n\n✅ No findings. Nothing to flag on this diff.' })
     await conclude(pull.head.sha, 'success', 'No findings')
-    console.log('no findings, nothing posted')
+    console.log('no findings, comment posted')
     return
   }
 
@@ -173,6 +174,7 @@ async function post(pr) {
 
   if (kept.length === 0) {
     const why = `No findings. ${invented.length} dropped, quoted line not in the diff.`
+    await api('POST', `/issues/${pr}/comments`, { body: `## 🔎 Review\n\n✅ ${why}` })
     await conclude(pull.head.sha, 'success', why)
     console.log(why)
     return
