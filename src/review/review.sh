@@ -7,9 +7,10 @@ TARGET="${3:-}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-if [ -f .runtime.env ]; then
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.runtime.env}"
+if [ -f "$RUNTIME_ENV_FILE" ]; then
   set -a
-  . ./.runtime.env
+  . "$RUNTIME_ENV_FILE"
   set +a
 fi
 : "${REPO:?REPO is not set}"

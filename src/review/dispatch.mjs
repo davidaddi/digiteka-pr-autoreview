@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import { rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const HERMES = process.env.HERMES_BIN ?? 'hermes'
 const TIMEOUT_MS = Number(process.env.HERMES_TIMEOUT ?? 2400) * 1000
@@ -25,6 +27,22 @@ export function prompt({ repo, pr, action, argument, root }) {
   ].join(' ')
 }
 
+// hermes's bash tool does not forward the parent process's env vars through to the shell
+// it runs commands in -- it strips anything whose name looks like a secret (TOKEN, KEY, ...)
+// before the child shell ever starts, so GITHUB_TOKEN/GH_TOKEN set here never reach
+// review.sh, no matter how they are passed to spawn(). REPO survives because its name does
+// not look like a secret; the credentials do not.
+//
+// The workaround, already proven by workflow/review.yml for the single-repo GitHub Actions
+// path: write the token to a file instead of the environment, and have review.sh source it
+// from inside the same bash-tool shell that ends up running it -- a plain file read, which
+// hermes has no reason to filter. The filename is keyed by repo+pr, the same key
+// receiver.mjs's enqueue() already serializes on, so two concurrent reviews (different repos
+// or different PRs) never share a file.
+function runtimeEnvFile(root, repo, pr) {
+  return join(root, `.runtime.${repo.replace('/', '-')}-${pr}.env`)
+}
+
 export function runHermes({ repo, pr, action, argument, root }) {
   const session = `pr-${repo.replace('/', '-')}-${pr}`
   const args = ['-z', prompt({ repo, pr, action, argument, root }), '--yolo', '-c', session]
@@ -32,8 +50,16 @@ export function runHermes({ repo, pr, action, argument, root }) {
   if (PROVIDER && MODEL) args.push('--provider', PROVIDER, '--model', MODEL)
   else if (PROVIDER || MODEL) throw new Error('HERMES_PROVIDER and HERMES_MODEL go together')
 
+  const runtimeEnv = runtimeEnvFile(root, repo, pr)
+  writeFileSync(
+    runtimeEnv,
+    `REPO="${repo}"\nGITHUB_TOKEN="${process.env.GITHUB_TOKEN}"\nGH_TOKEN="${process.env.GITHUB_TOKEN}"\nPATH="${process.env.PATH}"\n`,
+    { mode: 0o600 },
+  )
+
   const env = {
     ...process.env,
+    RUNTIME_ENV_FILE: runtimeEnv,
     TERMINAL_TIMEOUT: String(TIMEOUT_MS / 1000),
     TERMINAL_LIFETIME_SECONDS: String(TIMEOUT_MS / 1000 + 300),
   }
@@ -41,13 +67,16 @@ export function runHermes({ repo, pr, action, argument, root }) {
   return new Promise((resolve, reject) => {
     const child = spawn(HERMES, args, { cwd: root, env, stdio: ['ignore', 'inherit', 'inherit'] })
     const timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS)
+    const cleanup = () => rmSync(runtimeEnv, { force: true })
 
     child.on('error', (error) => {
       clearTimeout(timer)
+      cleanup()
       reject(error)
     })
     child.on('close', (code, signal) => {
       clearTimeout(timer)
+      cleanup()
       if (code === 0) return resolve()
       reject(new Error(signal === 'SIGKILL' ? `no answer after ${TIMEOUT_MS / 60000} minutes` : `exit ${code}`))
     })

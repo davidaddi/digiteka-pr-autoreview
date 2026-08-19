@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync } from 'node:fs'
 
-if (existsSync('.runtime.env')) {
-  for (const line of readFileSync('.runtime.env', 'utf8').split('\n')) {
+const RUNTIME_ENV_FILE = process.env.RUNTIME_ENV_FILE ?? '.runtime.env'
+if (existsSync(RUNTIME_ENV_FILE)) {
+  for (const line of readFileSync(RUNTIME_ENV_FILE, 'utf8').split('\n')) {
     const at = line.indexOf('=')
     if (at < 1) continue
     const value = line.slice(at + 1).replace(/^"(.*)"$/s, '$1')
