@@ -163,9 +163,13 @@ async function post(pr) {
   const diff = diffLines(process.env.DIFF_FILE ?? '.pr.diff')
   const textAt = (f) => (Number.isInteger(f.line) ? diff.get(f.file)?.get(f.line) : undefined)
 
+  const stripMarker = (quote) => (quote.startsWith('+') || quote.startsWith('-') ? quote.slice(1) : quote)
+
   const invented = findings.filter((f) => {
     const text = textAt(f)
-    return text !== undefined && text.trim() !== String(f.quote).trim()
+    if (text === undefined) return false
+    const quote = String(f.quote)
+    return text.trim() !== quote.trim() && text.trim() !== stripMarker(quote).trim()
   })
   for (const f of invented) console.error(`quote does not match ${f.file}:${f.line}, dropped`)
 

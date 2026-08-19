@@ -182,10 +182,23 @@ Host and Origin are checked to keep a web page you visit from driving it through
   them back. Use systemd if you want them at boot.
 - Nothing serialises reviews across repositories, the runners will happily work in parallel.
 
+## Running it unattended
+
+Everything above needs a terminal held open. To have the webhook multi-repo mode come up on
+its own at boot — on an EC2 instance nobody logs into — see [ops/README.md](ops/README.md).
+
+It is a set of `systemd --user` units in a chain: a preflight that refuses to start anything
+on a machine that would fail later (no PAT, hermes unconfigured, claude not logged in, an old
+node shadowing a new one), then cloudflared, then a webhook refresh, then the receiver.
+
+Three things still have to be done by hand, once, before the first boot: mint the PAT,
+`hermes config set model.provider`, and log `claude` in. They are interactive or they are
+secrets. The preflight checks all three and says so by name when one is missing.
+
 ## Limits
 
 - The quick tunnel is ephemeral and capped at 200 concurrent requests. Fine for a sandbox, wrong for production.
-- Leave the terminal open. Close it, everything stops.
+- Leave the terminal open. Close it, everything stops. (Unless you install the units in `ops/`.)
 - On a very large diff, one pass samples rather than covers.
 
 ## Licence

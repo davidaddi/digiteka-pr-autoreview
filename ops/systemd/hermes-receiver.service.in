@@ -1,0 +1,75 @@
+# hermes-pr-review -- step 3 of 3: the multi-repo receiver
+#
+# TEMPLATE. ops/install-systemd.sh renders it into ~/.config/systemd/user/ with the
+# placeholders below filled in. Edit this file, not the rendered copy, then re-install.
+#
+#   checkout   @PR_REVIEW_ROOT@
+#   PATH       @PR_REVIEW_PATH@
+#   rendered   @RENDERED_AT@
+#
+# The long-lived process. Listens on 127.0.0.1:$WEBHOOK_PORT (from .env, which the receiver
+# reads itself) and spawns hermes -- and through it claude -- once per /review. Those two are
+# CLIs invoked per delivery, not services: nothing here keeps them running, the preflight
+# only guarantees they are installed, configured and logged in before any traffic arrives.
+#
+# PATH= below is what those children inherit. It is the reason `hermes` resolves inside a
+# review at 4am on a machine where nobody has a login shell open.
+
+[Unit]
+Description=hermes-pr-review multi-repo webhook receiver
+Documentation=file://@PR_REVIEW_ROOT@/ops/README.md
+Requires=hermes-preflight.service
+After=hermes-preflight.service
+
+# Wants=, NOT Requires=, and this one is load-bearing. Requires= propagates restarts: when
+# cloudflared crashes and Restart=always brings the tunnel back, systemd restarts everything
+# that Requires= it -- which was observed to stop this unit too. That would kill whatever
+# review is in flight, and a review is up to forty minutes of hermes and claude work
+# destroyed by a ten-second blip in something it does not even talk to.
+#
+# The receiver does not care what the tunnel's address is. It listens on 127.0.0.1 and
+# serves whatever arrives. Wants= still pulls the tunnel up at boot and After= still orders
+# them, but a tunnel restart now leaves this process, and the review it is running,
+# completely alone.
+Wants=hermes-tunnel.service
+After=hermes-tunnel.service
+# Ordering only, no Wants=: the sync unit is started by the tunnel's ExecStartPost, and this
+# line just says "if it is in the same transaction, let it finish first". At boot it is, so
+# the receiver comes up with the hooks already re-pointed. If the sync fails, the receiver
+# still starts: a live receiver behind stale hooks is useless but harmless, a dead one on a
+# passing GitHub 502 is a machine that needs a human.
+After=hermes-webhook-sync.service
+PartOf=hermes-webhook.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=@PR_REVIEW_ROOT@
+Environment=PR_REVIEW_ROOT=@PR_REVIEW_ROOT@
+Environment=PATH=@PR_REVIEW_PATH@
+# No EnvironmentFile=.env here on purpose: receiver.mjs calls loadEnv() and reads .env
+# itself, with ??= semantics. Loading it twice would only add a second parser to disagree
+# with the first one.
+EnvironmentFile=-@PR_REVIEW_ROOT@/ops/systemd.env
+ExecStart=@PR_REVIEW_ROOT@/ops/receiver-run.sh
+
+# Type=exec says node was executed. It does not say the port answers -- receiver.mjs
+# exit(1)s on a missing secret or a stale .runtime.env, and that would otherwise be a
+# green unit. This makes 'started' mean 'GET /healthz returned 200'.
+ExecStartPost=@PR_REVIEW_ROOT@/ops/receiver-ready.sh
+
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+
+# A review can be forty minutes of hermes and claude work. SIGTERM goes to node, which is
+# the shape the receiver expects; give the tree a moment before SIGKILL rather than tearing
+# a running review in half.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+# Not enabled directly -- enable hermes-webhook.target, which pulls this in. Kept so that
+# `systemctl --user enable hermes-receiver` also does something sensible if you want just
+# this one at boot.
+WantedBy=default.target

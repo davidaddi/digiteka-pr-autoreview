@@ -1,0 +1,44 @@
+# hermes-pr-review -- re-point every GitHub webhook at the current tunnel url
+#
+# TEMPLATE. ops/install-systemd.sh renders it into ~/.config/systemd/user/ with the
+# placeholders below filled in. Edit this file, not the rendered copy, then re-install.
+#
+#   checkout   @PR_REVIEW_ROOT@
+#   PATH       @PR_REVIEW_PATH@
+#   rendered   @RENDERED_AT@
+#
+# Nothing Wants= this unit, on purpose. Its trigger is the ExecStartPost of
+# hermes-tunnel.service, and only that. If it were also pulled in by the boot transaction it
+# would either run twice (the tunnel's trigger plus the boot job) or the two jobs would
+# conflict and one would be cancelled. One trigger, one run, after every single start of the
+# tunnel -- boot, crash-restart and `systemctl restart hermes-tunnel` alike.
+#
+# You can still run it by hand at any time:
+#   systemctl --user start hermes-webhook-sync
+# and Requires=hermes-tunnel.service means that brings the tunnel up first if it is down,
+# because there would be no url to point the hooks at otherwise.
+
+[Unit]
+Description=hermes-pr-review webhook refresh (re-point GitHub hooks at the current tunnel url)
+Documentation=file://@PR_REVIEW_ROOT@/ops/README.md
+Requires=hermes-tunnel.service
+After=hermes-tunnel.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# 'active (exited)' afterwards, so `systemctl --user status hermes-webhook-sync` shows when
+# the hooks were last re-pointed instead of an empty 'inactive'.
+RemainAfterExit=yes
+WorkingDirectory=@PR_REVIEW_ROOT@
+Environment=PR_REVIEW_ROOT=@PR_REVIEW_ROOT@
+Environment=PATH=@PR_REVIEW_PATH@
+EnvironmentFile=-@PR_REVIEW_ROOT@/ops/systemd.env
+ExecStart=@PR_REVIEW_ROOT@/ops/webhook-sync.sh
+
+# Allowed on Type=oneshot (only always and on-success are refused) and worth having: the
+# common failure is a transient GitHub 5xx, and until this succeeds every hook is pointing
+# at a hostname that no longer resolves.
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=300
