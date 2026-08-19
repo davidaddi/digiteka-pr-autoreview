@@ -9,12 +9,17 @@ You comment `/review`. It answers on the exact lines.
 ```bash
 gh repo create my-sandbox --template iFeyz/hermes-pr-review --public --clone
 cd my-sandbox
-./setup.sh
+./setup-demo.sh
 ```
 
 Then comment `/review` on the pull request it opened.
 
 That pull request has **3 real bugs planted in it**. See how many come back.
+
+(`./setup.sh`, no suffix, is a different thing: it sets up the persistent multi-repo webhook
+mode described in [Many repositories, one machine, by webhook](#many-repositories-one-machine-by-webhook)
+below. `./setup-demo.sh` is the one-shot demo above — same checks, ephemeral tunnel, torn down
+on Ctrl-C.)
 
 **Using an AI to set this up?** Point it at [AGENTS.md](AGENTS.md). It has the exact steps, the
 failures you will hit, and what not to do.
@@ -76,17 +81,20 @@ One file, `review.config.yml`:
 
 `node` · `gh` · `cloudflared` · `hermes` · `claude`
 
-`setup.sh` tells you which are missing and prints the install command.
+`setup.sh` and `setup-demo.sh` both tell you which are missing and print the install command.
 
 No API key anywhere. Both sides run on subscription logins.
 
-## On your own repo
+## On your own repo, once
 
 ```bash
-REPO=you/your-project SKIP_DEMO=1 ./setup.sh
+REPO=you/your-project SKIP_DEMO=1 ./setup-demo.sh
 ```
 
 The webhook is removed when you stop the script. Nothing is left behind.
+
+For more than one repository, or for something that keeps running after you close the
+terminal, see the next section instead.
 
 ## Make the bot post, not you
 
@@ -182,10 +190,46 @@ Host and Origin are checked to keep a web page you visit from driving it through
   them back. Use systemd if you want them at boot.
 - Nothing serialises reviews across repositories, the runners will happily work in parallel.
 
+## Many repositories, one machine, by webhook
+
+The mode above (`src/provisioning/`) needs one self-hosted runner per repository — real, but
+~700 MB and one process per repository. `src/provisioning-webhook/` is the lighter
+alternative: one long-lived receiver, one tunnel, any number of repositories, each just a
+webhook pointing at the same address. No workflow file, no runner, no `.github/` changes on
+the target repository at all.
+
+```bash
+./setup.sh
+```
+
+In order, it: checks the binaries, creates `.env` if missing and fills in `GITHUB_TOKEN` (asks
+for a PAT interactively, never echoed), `WEBHOOK_MULTI_SECRET` (generated) and `WEBHOOK_PORT`
+(defaulted), checks that `hermes` and `claude` are already configured (it will not log you in
+for you), starts a persistent `cloudflared` tunnel, registers `REPO=owner/name` (or
+reprovisions everything already in `repos.yml` against the current tunnel url), and starts the
+receiver in the background with `nohup`, so it survives the shell that started it.
+
+Re-running `./setup.sh` is always safe: every step checks its own state first (tunnel already
+up, receiver already listening, repository already registered) and does nothing rather than
+duplicate it. That is what makes it the right thing to run again after a reboot, before the
+systemd mode below is worth setting up.
+
+```bash
+node src/provisioning-webhook/sync-repos.mjs add owner/name    # register another repository
+node src/provisioning-webhook/sync-repos.mjs list              # webhook status per repository
+kill $(cat .receiver.pid)                                      # stop the receiver
+node src/provisioning-webhook/tunnel-lifecycle.mjs stop         # stop the tunnel
+```
+
+The quick tunnel changes hostname on every restart. `./setup.sh` re-points every registered
+webhook at the new one automatically; running `node src/provisioning-webhook/sync-repos.mjs
+sync` does the same thing without going through the rest of the script.
+
 ## Running it unattended
 
-Everything above needs a terminal held open. To have the webhook multi-repo mode come up on
-its own at boot — on an EC2 instance nobody logs into — see [ops/README.md](ops/README.md).
+Everything above still needs a terminal held open once, after every reboot, to run
+`./setup.sh` again. To have the webhook multi-repo mode come up entirely on its own at boot —
+on an EC2 instance nobody logs into — see [ops/README.md](ops/README.md).
 
 It is a set of `systemd --user` units in a chain: a preflight that refuses to start anything
 on a machine that would fail later (no PAT, hermes unconfigured, claude not logged in, an old
@@ -198,7 +242,9 @@ secrets. The preflight checks all three and says so by name when one is missing.
 ## Limits
 
 - The quick tunnel is ephemeral and capped at 200 concurrent requests. Fine for a sandbox, wrong for production.
-- Leave the terminal open. Close it, everything stops. (Unless you install the units in `ops/`.)
+- `setup-demo.sh`: leave the terminal open, close it and everything stops. `setup.sh` instead
+  backgrounds the tunnel and the receiver, so they survive the terminal — but not a reboot,
+  unless you install the units in `ops/`.
 - On a very large diff, one pass samples rather than covers.
 
 ## Licence

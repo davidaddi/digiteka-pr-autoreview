@@ -4,9 +4,6 @@
 # tunnel and a receiver meant to keep running after this script exits, serving every repository
 # registered in repos.yml, until you stop them yourself or install the systemd units in ops/.
 #
-# This is NOT the demo anymore. The original single-repo, everything-torn-down-on-Ctrl-C demo
-# lives on unchanged in ./setup-demo.sh (see README.md's "Try it" section).
-#
 # Every step below is idempotent: re-running ./setup.sh after a failure, a reboot, or a tunnel
 # restart just picks up where things stood (the tunnel, the receiver and the registry all check
 # their own state before doing anything). That is also why there is no `trap cleanup EXIT`
@@ -234,7 +231,8 @@ cat <<EOF
 
 EOF
 
-echo alias lr='node src/provisioning-webhook/sync-repos.mjs list'
+echo alias lr='node src/provisioning-webhook/sync-repos.mjs list' >> ~/.bashrc
+echo alias herstat='systemctl --user list-units 'hermes-*' --all' >> ~/.bashrc
 
 # ---------------------------------------------------------------------------------------
 # 7. systemd, disabled on purpose.
@@ -255,4 +253,3 @@ echo alias lr='node src/provisioning-webhook/sync-repos.mjs list'
 # sudo loginctl enable-linger "$USER"
 # systemctl --user enable --now hermes-webhook.target
 # ---------------------------------------------------------------------------------------
-

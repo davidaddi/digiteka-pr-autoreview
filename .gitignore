@@ -18,6 +18,10 @@ webhooks.json.tmp
 .tunnel.json.tmp
 .tunnel.log
 
+# setup.sh's own background receiver, started by hand with nohup (no systemd for now)
+.receiver.log
+.receiver.pid
+
 # systemd mode (ops/): per-instance overrides and the webhook refresh lock. systemd.env is
 # where an EC2 instance puts what differs from .env, so it can hold secrets: never commit it.
 ops/systemd.env
