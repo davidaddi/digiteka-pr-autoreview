@@ -18,3 +18,9 @@ export async function logOrder(orderId, total) {
   }
   return response.json()
 }
+
+function averageOrderValue(orders) {
+  const total = orders.reduce((sum, o) => sum + o.amount, 0)
+  return total / orders.length
+}
+module.exports.averageOrderValue = averageOrderValue
