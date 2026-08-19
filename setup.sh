@@ -233,6 +233,7 @@ EOF
 
 echo alias lr='node src/provisioning-webhook/sync-repos.mjs list' >> ~/.bashrc
 echo alias herstat='systemctl --user list-units 'hermes-*' --all' >> ~/.bashrc
+source ~/.bashrc
 
 # ---------------------------------------------------------------------------------------
 # 7. systemd, disabled on purpose.
