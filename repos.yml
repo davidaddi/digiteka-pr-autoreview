@@ -4,4 +4,3 @@
 # src/provisioning/sync-repos.mjs owns this file. The web UI never writes it directly.
 
 repos:
-  - davidaddi/digiteka-pr-autoreview:active
