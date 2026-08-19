@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
+#
+# Bootstraps the persistent multi-repo webhook mode (src/provisioning-webhook/): a cloudflared
+# tunnel and a receiver meant to keep running after this script exits, serving every repository
+# registered in repos.yml, until you stop them yourself or install the systemd units in ops/.
+#
+# This is NOT the demo anymore. The original single-repo, everything-torn-down-on-Ctrl-C demo
+# lives on unchanged in ./setup-demo.sh (see README.md's "Try it" section).
+#
+# Every step below is idempotent: re-running ./setup.sh after a failure, a reboot, or a tunnel
+# restart just picks up where things stood (the tunnel, the receiver and the registry all check
+# their own state before doing anything). That is also why there is no `trap cleanup EXIT`
+# like setup-demo.sh has: tearing down the tunnel/webhook/receiver when this script ends would
+# undo the one thing it exists to set up. Ending on purpose is the success case here, not a
+# signal to stop everything. A failure *during* setup still exits non-zero via `die` below, but
+# nothing already started is torn down: just fix what `die` printed and run ./setup.sh again.
+
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-RECEIVER_PID=""
-TUNNEL_PID=""
-HOOK_ID=""
-TUNNEL_LOG="$(mktemp)"
-PORT="${PORT:-8787}"
-
 info() { printf '  %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die()  { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-
-cleanup() {
-  printf '\n'
-  [ -n "$HOOK_ID" ] && gh api -X DELETE "repos/$REPO/hooks/$HOOK_ID" --silent 2>/dev/null && info "webhook removed"
-  [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null
-  [ -n "$RECEIVER_PID" ] && kill "$RECEIVER_PID" 2>/dev/null
-  rm -f "$TUNNEL_LOG" .runtime.env
-  info "sandbox stopped, nothing left running"
-}
-trap cleanup EXIT INT TERM
 
 step "1. Checking what you have"
 
@@ -47,8 +47,91 @@ if [ ${#missing[@]} -gt 0 ]; then
   die "Then run ./setup.sh again."
 fi
 
-gh auth status >/dev/null 2>&1 || die "Run: gh auth login"
+step "2. .env"
 
+if [ ! -f .env ]; then
+  ( umask 077; : > .env )
+  info "created .env (mode 600)"
+fi
+
+# Reads one key exactly like loadEnv() in src/provisioning/github-provision.mjs does: first
+# '=' splits key from value, comment lines start with '#', one pair of surrounding double
+# quotes is stripped. Kept in sync by hand rather than sourced from ops/lib.sh's env_value(),
+# so this script never touches ops/*.
+env_get() {
+  local key="$1" line value
+  line=$(grep -m1 -E "^[[:space:]]*${key}=" .env 2>/dev/null) || return 1
+  value="${line#*=}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [ ${#value} -ge 2 ] && [ "${value:0:1}" = '"' ] && [ "${value: -1}" = '"' ]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+# Rewrites the file through bash builtins only (read, printf), never through an external
+# command that would carry the secret as one of its own arguments and show up in `ps` while
+# it runs. Every value is written back double-quoted, which is what env_get()/loadEnv() expect.
+env_set() {
+  local key="$1" value="$2" found=0 line
+  local out=()
+  if [ -f .env ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [[ "$line" =~ ^[[:space:]]*${key}= ]]; then
+        out+=("${key}=\"${value}\"")
+        found=1
+      else
+        out+=("$line")
+      fi
+    done < .env
+  fi
+  [ "$found" -eq 1 ] || out+=("${key}=\"${value}\"")
+  ( umask 077; printf '%s\n' "${out[@]}" > .env )
+}
+
+if [ -z "$(env_get GITHUB_TOKEN || true)" ]; then
+  printf '\n  No GITHUB_TOKEN in .env yet. Mint a classic PAT with the "repo" and "workflow" scopes\n'
+  printf '  (fine-grained equivalent: Administration + Webhooks read/write on the repositories\n'
+  printf '  you will register) at https://github.com/settings/tokens\n\n'
+  read -rsp '  Paste it here (hidden, saved only to .env): ' token
+  printf '\n'
+  [ -n "$token" ] || die "No token entered. Put GITHUB_TOKEN into .env yourself, then run ./setup.sh again."
+  env_set GITHUB_TOKEN "$token"
+  unset token
+  info "GITHUB_TOKEN saved to .env"
+else
+  info "GITHUB_TOKEN already set"
+fi
+
+if [ -z "$(env_get WEBHOOK_MULTI_SECRET || true)" ]; then
+  secret="$(head -c 32 /dev/urandom | base64)"
+  env_set WEBHOOK_MULTI_SECRET "$secret"
+  unset secret
+  info "WEBHOOK_MULTI_SECRET generated"
+else
+  info "WEBHOOK_MULTI_SECRET already set"
+fi
+
+WEBHOOK_PORT="$(env_get WEBHOOK_PORT || true)"
+if [ -z "$WEBHOOK_PORT" ]; then
+  WEBHOOK_PORT=8789
+  if command -v lsof >/dev/null 2>&1; then
+    busy="$(lsof -nP -iTCP:"$WEBHOOK_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  else
+    busy=""
+    ss -lnt 2>/dev/null | grep -q ":$WEBHOOK_PORT " && busy="in use"
+  fi
+  [ -z "$busy" ] || die "Default port $WEBHOOK_PORT is already taken. Set WEBHOOK_PORT=<other> in .env and run ./setup.sh again."
+  env_set WEBHOOK_PORT "$WEBHOOK_PORT"
+  info "WEBHOOK_PORT defaulted to $WEBHOOK_PORT"
+else
+  info "WEBHOOK_PORT already set to $WEBHOOK_PORT"
+fi
+
+step "3. Checking hermes and claude are configured"
+
+# Logins are interactive; this script guides you to them but never runs them for you.
 PROVIDER="$(hermes config get model.provider 2>/dev/null | head -1 || true)"
 case "$PROVIDER" in
   *"not set"*|auto|"")
@@ -61,120 +144,115 @@ case "$PROVIDER" in
   *) info "hermes brain: $PROVIDER" ;;
 esac
 
-step "2. Which repository"
-
-REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)}"
-[ -n "$REPO" ] || die "Set REPO=owner/name, or run this inside a cloned repository."
-info "$REPO"
-
-GITHUB_TOKEN="$(gh auth token)"
-WEBHOOK_SECRET="$(head -c 32 /dev/urandom | base64)"
-export REPO GITHUB_TOKEN WEBHOOK_SECRET PORT SANDBOX_ROOT="$PWD"
-export HERMES_STREAM_READ_TIMEOUT="${HERMES_STREAM_READ_TIMEOUT:-1800}"
-
-(
-  umask 077
-  cat > .runtime.env <<EOF
-REPO="$REPO"
-GITHUB_TOKEN="$GITHUB_TOKEN"
-GH_TOKEN="$GITHUB_TOKEN"
-PATH="$PATH"
-EOF
-)
-
-step "3. Starting the receiver"
-
-if command -v lsof >/dev/null 2>&1; then
-  busy="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+CLAUDE_CREDS="${CLAUDE_CREDENTIALS_FILE:-$HOME/.claude/.credentials.json}"
+if [ -s "$CLAUDE_CREDS" ]; then
+  info "claude logged in ($CLAUDE_CREDS)"
 else
-  busy="$(ss -lntp 2>/dev/null | grep -oE "pid=[0-9]+" | head -1 | cut -d= -f2 || true)"
-  ss -lnt 2>/dev/null | grep -q ":$PORT " || busy=""
+  printf '\n  Claude is not logged in (%s is missing or empty).\n' "$CLAUDE_CREDS"
+  printf '  Run once, interactively:\n\n'
+  printf '    claude\n\n'
+  die "Log in, then run ./setup.sh again."
 fi
-[ -z "$busy" ] || die "Port $PORT is already taken by pid $busy. Stop it, or run with PORT=<other>."
 
-node src/review/receiver.mjs &
-RECEIVER_PID=$!
-sleep 1
-kill -0 "$RECEIVER_PID" 2>/dev/null || die "The receiver did not start."
-info "listening on 127.0.0.1:$PORT"
+step "4. Starting the tunnel"
 
-step "4. Opening a tunnel"
-
-cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$PORT" > "$TUNNEL_LOG" 2>&1 &
-TUNNEL_PID=$!
-
-PUBLIC_URL=""
-for _ in $(seq 1 30); do
-  PUBLIC_URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
-  [ -n "$PUBLIC_URL" ] && break
-  sleep 1
-done
-[ -n "$PUBLIC_URL" ] || die "The tunnel never came up. See $TUNNEL_LOG"
+PUBLIC_URL="$(node src/provisioning-webhook/tunnel-lifecycle.mjs start "$WEBHOOK_PORT")" \
+  || die "The tunnel did not come up. See .tunnel.log"
 info "$PUBLIC_URL"
 
-step "5. Pointing GitHub at it"
+step "5. Registering at least one repository"
 
-HOOK_ID="$(gh api "repos/$REPO/hooks" -X POST \
-  -f name=web \
-  -F active=true \
-  -f 'events[]=issue_comment' \
-  -f "config[url]=$PUBLIC_URL" \
-  -f 'config[content_type]=json' \
-  -f "config[secret]=$WEBHOOK_SECRET" \
-  -q .id)"
-info "webhook $HOOK_ID, removed automatically when you stop this script"
+ENTRY_COUNT="$(
+  REGISTRY_MODULE="$PWD/src/provisioning/registry.mjs" \
+    node --input-type=module -e '
+      const { read } = await import(process.env.REGISTRY_MODULE)
+      console.log(read().length)
+    ' 2>/dev/null || echo 0
+)"
 
-delivered=""
-for _ in $(seq 1 40); do
-  if gh api "repos/$REPO/hooks/$HOOK_ID/deliveries" -q '.[] | select(.event == "ping") | .status_code' 2>/dev/null | grep -q '^2'; then
-    delivered=1
-    break
-  fi
-  sleep 5
-done
-
-if [ -n "$delivered" ]; then
-  info "GitHub reached it"
+if [ "${ENTRY_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+  info "repos.yml already has $ENTRY_COUNT registered, re-pointing every webhook at $PUBLIC_URL"
+  node src/provisioning-webhook/sync-repos.mjs sync
 else
-  info "no ping confirmation yet, starting anyway. If nothing happens when you comment,"
-  info "look at the webhook deliveries on GitHub and at $TUNNEL_LOG"
+  [ -n "${REPO:-}" ] || die "repos.yml is empty. Set REPO=owner/name and run ./setup.sh again to register the first one."
+  info "registering $REPO"
+  node src/provisioning-webhook/sync-repos.mjs add "$REPO"
 fi
 
-step "6. Demo pull request"
+step "6. Starting the receiver"
 
-if [ -n "${SKIP_DEMO:-}" ]; then
-  PR="$(gh pr list --repo "$REPO" --state open --json number -q '.[0].number' 2>/dev/null || true)"
-  [ -n "$PR" ] || die "SKIP_DEMO is set but $REPO has no open pull request to review."
-  info "skipped, will watch the open pull requests of $REPO"
-elif gh pr list --repo "$REPO" --head demo/checkout --json number -q '.[0].number' | grep -q .; then
-  PR="$(gh pr list --repo "$REPO" --head demo/checkout --json number -q '.[0].number')"
-  info "already open: #$PR"
+RECEIVER_LOG="$PWD/.receiver.log"
+RECEIVER_PID_FILE="$PWD/.receiver.pid"
+
+if command -v lsof >/dev/null 2>&1; then
+  busy_pid="$(lsof -nP -iTCP:"$WEBHOOK_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
 else
-  git checkout -q -b demo/checkout
-  cp demo/.seed/cart.js demo/cart.js
-  git add demo/cart.js
-  git commit -qm "feat(checkout): apply discount and log the order"
-  git push -q -u origin demo/checkout
-  gh pr create --repo "$REPO" --head demo/checkout --base main \
-    --title "feat(checkout): apply discount and log the order" \
-    --body "Three problems are hiding in here. Comment /review and see which ones come back." >/dev/null
-  PR="$(gh pr list --repo "$REPO" --head demo/checkout --json number -q '.[0].number')"
-  git checkout -q -
-  [ -n "$PR" ] || die "The demo pull request was created but its number could not be read."
-  info "opened #$PR"
+  busy_pid="$(ss -lntp 2>/dev/null | grep ":$WEBHOOK_PORT " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
 fi
 
-TRIGGER="$(node src/review/config.mjs get trigger)"
+if [ -n "${busy_pid:-}" ]; then
+  cmd="$(ps -p "$busy_pid" -o args= 2>/dev/null || true)"
+  case "$cmd" in
+    *receiver.mjs*)
+      echo "$busy_pid" > "$RECEIVER_PID_FILE"
+      info "receiver already running on 127.0.0.1:$WEBHOOK_PORT (pid $busy_pid), leaving it alone"
+      ;;
+    *)
+      die "Port $WEBHOOK_PORT is already taken by pid $busy_pid ($cmd), not the receiver. Free it, or change WEBHOOK_PORT in .env."
+      ;;
+  esac
+else
+  nohup node src/provisioning-webhook/receiver.mjs >>"$RECEIVER_LOG" 2>&1 &
+  RECEIVER_PID=$!
+  disown
+  sleep 1
+  kill -0 "$RECEIVER_PID" 2>/dev/null || die "The receiver did not start. See $RECEIVER_LOG"
+  echo "$RECEIVER_PID" > "$RECEIVER_PID_FILE"
+  info "receiver started, pid $RECEIVER_PID, logs at $RECEIVER_LOG"
+fi
+
+TRIGGER="$(node src/review/config.mjs get trigger 2>/dev/null || true)"
+TRIGGER="${TRIGGER:-/review}"
 
 cat <<EOF
 
   Ready.
 
-  Go to https://github.com/$REPO/pull/$PR and comment:  $TRIGGER
+  Tunnel    $PUBLIC_URL
+  Receiver  127.0.0.1:$WEBHOOK_PORT, logs at $RECEIVER_LOG
+  Repos     node src/provisioning-webhook/sync-repos.mjs list
 
-  Hermes takes it from there. Leave this terminal open.
-  Ctrl-C removes the webhook and stops everything.
+  Comment $TRIGGER on a pull request of a registered repository. This keeps running after
+  this terminal closes. To stop it:
+
+    kill \$(cat $RECEIVER_PID_FILE) && node src/provisioning-webhook/tunnel-lifecycle.mjs stop
+
+  To register another repository later: REPO=owner/name node src/provisioning-webhook/sync-repos.mjs add \$REPO
+
+  Want this to survive a reboot with no terminal open at all? See the commented section at
+  the bottom of this script, and ops/README.md.
 
 EOF
 
-wait "$RECEIVER_PID"
+echo alias lr='node src/provisioning-webhook/sync-repos.mjs list'
+
+# ---------------------------------------------------------------------------------------
+# 7. systemd, disabled on purpose.
+#
+# The user explicitly does not want systemd for now: everything above runs as plain
+# background processes (nohup + disown), which is enough as long as a terminal opens this
+# script at least once after every reboot.
+#
+# Uncomment the block below once that stops being good enough. It runs the same preflight
+# this script leans on by hand, renders the units in ops/systemd/*.in, enables lingering (so
+# the user manager exists even when nobody is logged in) and starts the hermes-webhook.target
+# chain: preflight -> tunnel -> webhook-sync -> receiver. See ops/README.md for the full
+# chain and why each dependency is the way it is.
+#
+# step "7. systemd"
+# ops/preflight.sh || die "preflight failed, see above"
+# ops/install-systemd.sh || die "could not install the systemd units"
+# sudo loginctl enable-linger "$USER"
+# systemctl --user enable --now hermes-webhook.target
+# ---------------------------------------------------------------------------------------
+
