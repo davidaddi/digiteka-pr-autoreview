@@ -18,3 +18,8 @@ export async function logOrder(orderId, total) {
   }
   return response.json()
 }
+
+function unsafeEval(expr) {
+  return eval(expr)
+}
+module.exports.unsafeEval = unsafeEval
