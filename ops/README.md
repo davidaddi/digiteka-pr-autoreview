@@ -1,204 +1,215 @@
-# Running the webhook mode at boot, unattended
+# Faire tourner le mode webhook au boot, sans surveillance
 
-This directory makes the multi-repo webhook mode (`src/provisioning-webhook/`) come up on
-its own when an EC2 instance boots, in the right order, and refuse to come up at all when
-something is missing.
+Ce dossier fait démarrer le mode webhook multi-repo (`src/provisioning-webhook/`) tout seul
+quand une instance EC2 boote, dans le bon ordre, et refuse de démarrer quoi que ce soit quand
+quelque chose manque.
 
-It does not touch the runner mode (`src/provisioning/`) or the single-repo demo (`setup.sh`).
+Il ne touche pas à la démo ponctuelle (`setup-demo.sh`).
 
-## What runs, and what only has to be installed
+## Ce qui tourne, et ce qui n'a besoin que d'être installé
 
-| | what it is | how it runs |
+| | ce que c'est | comment ça tourne |
 | --- | --- | --- |
-| `cloudflared` | the public address GitHub posts to | long-lived, `hermes-tunnel.service` |
-| `receiver.mjs` | listens on `127.0.0.1:$WEBHOOK_PORT`, dispatches | long-lived, `hermes-receiver.service` |
-| `hermes` | orchestrates one review | **not a service.** Spawned per delivery |
-| `claude` | reads the code, writes the fix | **not a service.** Spawned by `hermes` |
+| `cloudflared` | l'adresse publique sur laquelle GitHub/GitLab postent | tourne en continu, `hermes-tunnel.service` |
+| `receiver.mjs` | écoute sur `127.0.0.1:$WEBHOOK_PORT`, distribue | tourne en continu, `hermes-receiver.service` |
+| `hermes` | orchestre une revue | **pas un service.** Lancé à chaque livraison |
+| `claude` | lit le code, écrit le correctif | **pas un service.** Lancé par `hermes` |
 
-`hermes` and `claude` are CLIs invoked per `/review`. Nothing keeps them running. What
-matters is that they are installed, configured and logged in *before* the receiver accepts
-its first delivery — which is what the preflight is for.
+`hermes` et `claude` sont des CLI invoquées à chaque `/review`. Rien ne les fait tourner en
+continu. Ce qui compte, c'est qu'ils soient installés, configurés et connectés *avant* que le
+receveur n'accepte sa première livraison — c'est le rôle du preflight.
 
-## The chain
+## La chaîne
 
 ```
-hermes-preflight.service   oneshot   is this machine fit to serve?
+hermes-preflight.service   oneshot   cette machine est-elle apte à servir ?
         |  Requires + After
-hermes-tunnel.service      always    cloudflared, publishes a url into .tunnel.json
-        |  ExecStartPost fires ------> hermes-webhook-sync.service  oneshot
-        |                              re-points every GitHub hook at that url
+hermes-tunnel.service      always    cloudflared, publie une url dans .tunnel.json
+        |  ExecStartPost déclenche --> hermes-webhook-sync.service  oneshot
+        |                              re-pointe chaque hook GitHub vers cette url
         |  Wants + After
 hermes-receiver.service    always    node src/provisioning-webhook/receiver.mjs
 ```
 
-Four decisions in there are worth knowing about, because each one is a bug if reversed.
+Quatre décisions là-dedans valent d'être connues, parce que chacune devient un bug si on
+l'inverse.
 
-**The preflight gates everything.** `Requires=` + `After=`, so a failed check leaves the
-tunnel and the receiver `inactive dead`, not "running and quietly useless". A revoked token
-or an unconfigured hermes stops the machine at boot, where someone will see it, instead of
-at 3am on a pull request nobody is watching.
+**Le preflight verrouille tout.** `Requires=` + `After=`, donc un check échoué laisse le
+tunnel et le receveur `inactive dead`, pas « en train de tourner mais silencieusement
+inutile ». Un token révoqué ou un hermes non configuré arrête la machine au boot, là où
+quelqu'un le verra, plutôt qu'à 3h du matin sur une pull request que personne ne surveille.
 
-**The tunnel is cloudflared itself, not a wrapper.** `ops/tunnel-run.sh` ends in `exec`, so
-the process systemd supervises *is* cloudflared: `Restart=always` restarts the real thing
-and `$MAINPID` is real. `src/provisioning-webhook/tunnel-lifecycle.mjs` is unchanged and
-still works by hand; it double-forks into the background, which is right for a shell you are
-going to close and wrong under a supervisor. `ops/tunnel-ready.sh` writes the same
-`.tunnel.json` that script would have written, so `tunnel-lifecycle.mjs url|status`, the web
-console and `sync-repos.mjs` all keep working and cannot tell the difference.
+**Le tunnel est cloudflared lui-même, pas un wrapper.** `ops/tunnel-run.sh` finit par un
+`exec`, donc le processus que systemd supervise *est* cloudflared : `Restart=always` relance
+la vraie chose et `$MAINPID` est réel. `src/provisioning-webhook/tunnel-lifecycle.mjs` n'est
+pas modifié et fonctionne toujours à la main ; il se double-fork en arrière-plan, ce qui est
+juste pour un shell qu'on va fermer et faux sous un superviseur. `ops/tunnel-ready.sh` écrit le
+même `.tunnel.json` que ce script aurait écrit, donc `tunnel-lifecycle.mjs url|status`, la
+console web et `sync-repos.mjs` continuent tous de fonctionner sans voir la différence.
 
-**The webhook refresh is triggered by the tunnel, not by the boot order.**
-`cloudflared tunnel --url` is a *quick* tunnel: Cloudflare issues a brand new
-`<random>.trycloudflare.com` on every single start. After a crash, a restart or a reboot the
-tunnel is at a new address and every webhook GitHub holds points at a hostname that no longer
-resolves. GitHub does not tell anyone; it records failed deliveries nobody reads. So the
-refresh has to run after *every* start of the tunnel, and an ordinary `Wants=`/`After=`
-dependency only fires once at boot. `ExecStartPost` fires on automatic restarts too, which is
-why it lives there. Measured on a real crash: the url rotated and the hooks were re-pointed
-within seconds, with no human in the loop.
+**Le rafraîchissement du webhook est déclenché par le tunnel, pas par l'ordre de boot.**
+`cloudflared tunnel --url` est un tunnel *quick* : Cloudflare émet un tout nouveau
+`<random>.trycloudflare.com` à chaque démarrage. Après un crash, un redémarrage ou un reboot,
+le tunnel est à une nouvelle adresse et chaque webhook que GitHub détient pointe vers un nom
+d'hôte qui ne résout plus. GitHub ne prévient personne ; il enregistre des livraisons échouées
+que personne ne lit. Le rafraîchissement doit donc tourner après *chaque* démarrage du tunnel,
+et une dépendance ordinaire `Wants=`/`After=` ne se déclenche qu'une fois au boot.
+`ExecStartPost` se déclenche aussi sur les redémarrages automatiques, c'est pour ça qu'il est
+là. Mesuré sur un vrai crash : l'url a tourné et les hooks ont été re-pointés en quelques
+secondes, sans humain dans la boucle.
 
-**A tunnel restart does not touch the receiver.** The receiver has `Wants=` on the tunnel,
-deliberately not `Requires=`. `Requires=` propagates restarts, and it was observed stopping
-the receiver every time cloudflared came back — which would destroy a review in flight, up to
-forty minutes of hermes and claude work, because of a ten-second blip in something the
-receiver does not even talk to. The receiver listens on loopback and does not care what the
-tunnel's address is.
+**Un redémarrage du tunnel ne touche pas le receveur.** Le receveur a un `Wants=` sur le
+tunnel, volontairement pas un `Requires=`. `Requires=` propage les redémarrages, et on a
+observé que ça arrêtait le receveur chaque fois que cloudflared revenait — ce qui détruirait
+une revue en cours, jusqu'à quarante minutes de travail de hermes et claude, à cause d'un
+accroc de dix secondes sur quelque chose à qui le receveur ne parle même pas. Le receveur
+écoute en loopback et ne se soucie pas de l'adresse du tunnel.
 
-## `--user`, not a system service
+## `--user`, pas un service système
 
-These are `systemd --user` units running as an ordinary login user, and they need
-**lingering** enabled to start at boot.
+Ce sont des unités `systemd --user` tournant comme un utilisateur de login ordinaire, et elles
+ont besoin du **lingering** activé pour démarrer au boot.
 
-The reason is `hermes` and `claude`. Both keep their state in the home directory
-(`~/.hermes`, `~/.claude/.credentials.json`) and both are logged in interactively, once, by a
-human. A system unit would have to reproduce `HOME`, the credentials and the PATH of that
-human by hand, and every one of those is a silent failure when it drifts. Running as the user
-who logged them in means there is nothing to reproduce.
+La raison, c'est `hermes` et `claude`. Les deux gardent leur état dans le dossier personnel
+(`~/.hermes`, `~/.claude/.credentials.json`) et les deux sont connectés interactivement, une
+fois, par un humain. Une unité système devrait reproduire à la main le `HOME`, les
+identifiants et le PATH de cet humain, et chacun de ces éléments est un échec silencieux quand
+il dérive. Tourner comme l'utilisateur qui s'est connecté élimine tout ce qu'il y aurait à
+reproduire.
 
-The cost is one command, without which nothing starts at boot:
+Le coût est une commande, sans laquelle rien ne démarre au boot :
 
 ```bash
 sudo loginctl enable-linger $USER
 ```
 
-Without it the user manager only exists while someone is logged in, and the symptom is the
-worst kind: everything works when you ssh in to check, and nothing works at 4am.
+Sans elle, le gestionnaire utilisateur n'existe que quand quelqu'un est connecté, et le
+symptôme est le pire qui soit : tout fonctionne quand vous vous connectez en ssh pour vérifier,
+et rien ne fonctionne à 4h du matin.
 
-## Before the first boot: three things only a human can do
+## Avant le premier boot : trois choses que seul un humain peut faire
 
-None of these can be automated, and all three are checked by the preflight.
+Aucune de ces trois choses ne peut être automatisée, et les trois sont vérifiées par le
+preflight.
 
-1. **A GitHub PAT.** Classic token with the `repo` scope (fine-grained: Administration and
-   Webhooks read/write on the repositories you register). Put it in `.env` as `GITHUB_TOKEN`.
-2. **Configure hermes**, as the service user:
+1. **Un PAT GitHub.** Token classique avec le scope `repo` (équivalent fine-grained :
+   Administration et Webhooks lecture/écriture sur les repos que vous enregistrez). Le mettre
+   dans `.env` sous `GITHUB_TOKEN`.
+2. **Configurer hermes**, en tant qu'utilisateur du service :
    ```bash
    hermes config set model.provider <provider>
    hermes config set model.name <model>
    ```
-3. **Log claude in**, as the service user: run `claude` once, interactively, and log in.
-   This writes `~/.claude/.credentials.json`. There is no headless equivalent — without it
-   the first review opens a browser prompt on a machine with no browser and hangs until the
-   forty minute timeout kills it.
+3. **Connecter claude**, en tant qu'utilisateur du service : lancer `claude` une fois,
+   interactivement, et se connecter. Ça écrit `~/.claude/.credentials.json`. Il n'y a pas
+   d'équivalent headless — sans ça, la première revue ouvre une invite de navigateur sur une
+   machine sans navigateur et reste bloquée jusqu'au timeout de quarante minutes.
 
-## Install
+## Installation
 
-On the instance, as the service user:
+Sur l'instance, en tant qu'utilisateur du service :
 
 ```bash
-# 1. the checkout, anywhere you like -- nothing here hardcodes a path
+# 1. le checkout, où vous voulez -- rien ici ne fige un chemin en dur
 git clone <repo> ~/hermes-pr-review && cd ~/hermes-pr-review
 
-# 2. .env, mode 600, never committed. It needs at least:
+# 2. .env, mode 600, jamais commité. Il lui faut au moins :
 #      GITHUB_TOKEN, WEBHOOK_MULTI_SECRET, WEBHOOK_PORT
-#    WEBHOOK_MULTI_SECRET is deliberately not WEBHOOK_SECRET: setup.sh regenerates that one
-#    on every run, which would silently invalidate every hook this mode created.
+#    WEBHOOK_MULTI_SECRET n'est volontairement pas WEBHOOK_SECRET : setup.sh régénère ce
+#    dernier à chaque lancement, ce qui invaliderait silencieusement chaque hook créé ici.
 install -m 600 /dev/null .env && $EDITOR .env
 
-# 3. register at least one repository (writes repos.yml and creates the webhook)
+# 3. enregistrer au moins un repo (écrit repos.yml et crée le webhook)
 node src/provisioning-webhook/sync-repos.mjs add <owner>/<name>
 
-# 4. check the machine before installing anything
+# 4. vérifier la machine avant d'installer quoi que ce soit
 ops/preflight.sh
 
-# 5. render and install the units
+# 5. générer et installer les unités
 ops/install-systemd.sh
 sudo loginctl enable-linger $USER
 systemctl --user enable --now hermes-webhook.target
 ```
 
-`ops/install-systemd.sh` renders `ops/systemd/*.in` into `~/.config/systemd/user/`. It
-renders rather than symlinks because two things cannot be known until install time and
-cannot be expressed in a unit file:
+`ops/install-systemd.sh` génère `ops/systemd/*.in` dans `~/.config/systemd/user/`. Il génère
+plutôt que de faire des liens symboliques parce que deux choses ne peuvent être connues qu'au
+moment de l'installation et ne peuvent pas s'exprimer dans un fichier d'unité :
 
-- **where the checkout is.** systemd does not expand variables in `WorkingDirectory=`, so the
-  path has to be literal — but it must not be literal *in git*, where it would bake in one
-  person's home directory. Every unit carries the resolved path in a comment at the top.
-- **where the tools are.** systemd does not read `.bashrc`, `.profile` or nvm's shell hook. A
-  service gets a bare PATH. The installer resolves `node`, `cloudflared`, `hermes`, `claude`,
-  `git` and `gh` in the shell you run it from and writes their directories into `PATH=`.
-  Run it from a shell where those commands work.
+- **où se trouve le checkout.** systemd n'étend pas les variables dans `WorkingDirectory=`,
+  donc le chemin doit être littéral — mais il ne doit pas être littéral *dans git*, où il
+  figerait le dossier personnel d'une personne. Chaque unité porte le chemin résolu dans un
+  commentaire en haut.
+- **où se trouvent les outils.** systemd ne lit ni `.bashrc`, ni `.profile`, ni le hook shell
+  de nvm. Un service reçoit un PATH nu. L'installeur résout `node`, `cloudflared`, `hermes`,
+  `claude`, `git` et `gh` dans le shell depuis lequel vous le lancez et écrit leurs dossiers
+  dans `PATH=`. Lancez-le depuis un shell où ces commandes fonctionnent.
 
-That last point has a sharp edge worth stating plainly: **an old distro node will shadow a
-new one.** Ubuntu 22.04 ships node 12 in `/usr/bin`, Amazon Linux 2 ships 10, and `/usr/bin`
-comes before `~/.nvm` in most PATHs. `node -v` in your shell can say 22 while the service
-gets 12. The preflight checks the major version, not just that `node` exists.
+Ce dernier point a un piège qui vaut d'être dit clairement : **un vieux node de la distro va
+masquer un plus récent.** Ubuntu 22.04 livre node 12 dans `/usr/bin`, Amazon Linux 2 livre le
+10, et `/usr/bin` vient avant `~/.nvm` dans la plupart des PATH. `node -v` dans votre shell peut
+dire 22 alors que le service reçoit le 12. Le preflight vérifie la version majeure, pas
+seulement que `node` existe.
 
-## Day to day
+## Au quotidien
 
 ```bash
-systemctl --user list-units 'hermes-*' --all     # the real state of the whole mode
+systemctl --user list-units 'hermes-*' --all     # l'état réel de tout le mode (alias herstat)
 systemctl --user status hermes-receiver
-journalctl --user -u hermes-receiver -f          # reviews as they happen
-journalctl --user -u hermes-tunnel -n 50         # cloudflared's own output
-journalctl --user -u hermes-preflight -n 40      # why it refused to start
-journalctl --user -u hermes-webhook-sync         # when the hooks were last re-pointed
+journalctl --user -u hermes-receiver -f          # les revues au fur et à mesure
+journalctl --user -u hermes-tunnel -n 50         # la sortie de cloudflared lui-même
+journalctl --user -u hermes-preflight -n 40      # pourquoi il a refusé de démarrer
+journalctl --user -u hermes-webhook-sync         # quand les hooks ont été re-pointés pour la dernière fois
 
-systemctl --user restart hermes-webhook.target   # everything
-systemctl --user start hermes-webhook-sync       # re-point the hooks by hand
-node src/provisioning-webhook/sync-repos.mjs list # 'stale' = hook is on an old url
+systemctl --user restart hermes-webhook.target   # tout
+systemctl --user start hermes-webhook-sync       # re-pointer les hooks à la main
+node src/provisioning-webhook/sync-repos.mjs list # 'stale' = le hook est sur une vieille url (alias lr)
 ```
 
-Logging is journald's job: every process writes to stdout/stderr and systemd takes it from
-there. There is no log file to rotate. `.tunnel.log` is the one exception, and it exists only
-because `tunnel-lifecycle.mjs` and the web console parse the url out of it.
+Journaliser est le travail de journald : chaque processus écrit sur stdout/stderr et systemd
+s'en occupe. Il n'y a pas de fichier de log à faire tourner (rotate). `.tunnel.log` est
+l'unique exception, et elle existe seulement parce que `tunnel-lifecycle.mjs` et la console web
+extraient l'url de ce fichier.
 
-## Uninstall
+## Désinstallation
 
 ```bash
 ops/uninstall-systemd.sh
 ```
 
-Stops, disables and removes the units. It leaves `.env`, `repos.yml`, `webhooks.json` and the
-webhooks registered on GitHub alone — it uninstalls the supervision, not the setup. Those
-hooks now point at a tunnel that is gone; either re-install, or remove them properly with
-`sync-repos.mjs remove <owner>/<name>`. It also leaves any drop-in you added under
-`hermes-*.service.d/` in place, since it did not put them there.
+Arrête, désactive et supprime les unités. Laisse `.env`, `repos.yml`, `webhooks.json` et les
+webhooks enregistrés sur GitHub/GitLab intacts — ça désinstalle la supervision, pas la
+configuration. Ces hooks pointent maintenant vers un tunnel qui n'existe plus ; soit
+réinstallez, soit supprimez-les proprement avec `sync-repos.mjs remove <owner>/<name>`. Ça
+laisse aussi en place tout drop-in ajouté sous `hermes-*.service.d/`, puisque ce n'est pas ce
+script qui l'y a mis.
 
 ## `ops/systemd.env`
 
-Optional, gitignored, absent by default. Every unit reads it with `EnvironmentFile=-`, so it
-is the place for per-instance values that should not be in `.env`. It can hold secrets;
-never commit it. Anything here wins over `.env`, because both `loadEnv()` in node and
-`env_value()` in `ops/lib.sh` let the real environment beat the file.
+Optionnel, gitignored, absent par défaut. Chaque unité le lit avec `EnvironmentFile=-`, donc
+c'est l'endroit pour des valeurs propres à l'instance qui ne doivent pas être dans `.env`. Il
+peut contenir des secrets ; ne jamais le commiter. Tout ici l'emporte sur `.env`, parce que
+`loadEnv()` côté node et `env_value()` dans `ops/lib.sh` laissent tous les deux le vrai
+environnement gagner sur le fichier.
 
-Most useful for `WEBHOOK_PUBLIC_URL`. Point it at a named cloudflared tunnel with a real DNS
-route and the whole rotating-hostname problem above disappears: `sync-repos.mjs` uses that
-url instead of the quick tunnel's, and the refresh after every restart becomes a no-op.
-That is what to do for anything beyond a prototype.
+Le plus utile pour `WEBHOOK_PUBLIC_URL`. Le pointer vers un tunnel cloudflared nommé avec une
+vraie route DNS, et tout le problème de nom d'hôte qui tourne disparaît : `sync-repos.mjs`
+utilise cette url plutôt que celle du tunnel quick, et le rafraîchissement après chaque
+redémarrage devient un no-op. C'est ce qu'il faut faire pour tout ce qui dépasse un prototype.
 
-## The files
+## Les fichiers
 
-| file | what it does |
+| fichier | ce qu'il fait |
 | --- | --- |
-| `preflight.sh` | every check that has to pass before a delivery is accepted |
-| `lib.sh` | shared helpers; reads `.env` with exactly `loadEnv()`'s rules, never sources it |
-| `tunnel-run.sh` | `exec`s cloudflared (ExecStart of the tunnel unit) |
-| `tunnel-ready.sh` | waits for the url, writes `.tunnel.json` (ExecStartPost) |
-| `webhook-sync.sh` | `sync-repos.mjs refresh` under a lock |
-| `receiver-run.sh` | `exec`s the receiver |
-| `receiver-ready.sh` | polls `/healthz` so "started" means "answers" |
-| `install-systemd.sh` | renders and installs the units |
-| `uninstall-systemd.sh` | stops, disables and removes them |
-| `systemd/*.in` | the unit templates |
+| `preflight.sh` | chaque vérification qui doit passer avant qu'une livraison soit acceptée |
+| `lib.sh` | fonctions partagées ; lit `.env` avec exactement les règles de `loadEnv()`, ne le source jamais |
+| `tunnel-run.sh` | `exec`ute cloudflared (ExecStart de l'unité tunnel) |
+| `tunnel-ready.sh` | attend l'url, écrit `.tunnel.json` (ExecStartPost) |
+| `webhook-sync.sh` | `sync-repos.mjs refresh` sous un verrou |
+| `receiver-run.sh` | `exec`ute le receveur |
+| `receiver-ready.sh` | interroge `/healthz` pour que « démarré » veuille dire « répond » |
+| `install-systemd.sh` | génère et installe les unités |
+| `uninstall-systemd.sh` | les arrête, les désactive et les supprime |
+| `systemd/*.in` | les modèles d'unités |
 
-`.env` is read but never `source`d: it holds a token and an HMAC secret, and a stray backtick
-in it must never become a command.
+`.env` est lu mais jamais `source`, il contient un token et un secret HMAC, et un backtick qui
+s'y égare ne doit jamais devenir une commande.

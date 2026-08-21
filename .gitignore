@@ -1,15 +1,15 @@
 .env
 .runtime.env
 .runtime.*.env
-.pr.diff
-.findings.json
-.run.json
 .work/
 node_modules/
-.run.meta
 repos.yml.tmp
 runners/*
 !runners/.gitkeep
+
+# per-run artifacts: diff, findings, stream-json log, meta -- one review's output, not our code
+runs/*
+!runs/.gitkeep
 
 # webhook mode: hook ids and tunnel state belong to this machine, not to the repository
 webhooks.json

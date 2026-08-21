@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Bootstraps the persistent multi-repo webhook mode (src/provisioning-webhook/): a cloudflared
-# tunnel and a receiver meant to keep running after this script exits, serving every repository
-# registered in repos.yml, until you stop them yourself or install the systemd units in ops/.
+# tunnel and a receiver serving every repository registered in repos.yml, handed off at the
+# end to systemd --user (ops/) so both survive reboots with no terminal ever open again.
 #
 # Every step below is idempotent: re-running ./setup.sh after a failure, a reboot, or a tunnel
-# restart just picks up where things stood (the tunnel, the receiver and the registry all check
-# their own state before doing anything). That is also why there is no `trap cleanup EXIT`
+# restart just picks up where things stood (the tunnel, the registry and the systemd units all
+# check their own state before doing anything). That is also why there is no `trap cleanup EXIT`
 # like setup-demo.sh has: tearing down the tunnel/webhook/receiver when this script ends would
 # undo the one thing it exists to set up. Ending on purpose is the success case here, not a
 # signal to stop everything. A failure *during* setup still exits non-zero via `die` below, but
@@ -110,6 +110,18 @@ else
   info "WEBHOOK_MULTI_SECRET already set"
 fi
 
+# GitLab does not sign anything: this travels in a header on every delivery instead of being
+# proved like GitHub's, but it costs nothing to have ready before the first GitLab repo is
+# registered, and the receiver refuses to start without it once one is.
+if [ -z "$(env_get WEBHOOK_MULTI_SECRET_GITLAB || true)" ]; then
+  secret="$(head -c 32 /dev/urandom | base64)"
+  env_set WEBHOOK_MULTI_SECRET_GITLAB "$secret"
+  unset secret
+  info "WEBHOOK_MULTI_SECRET_GITLAB generated"
+else
+  info "WEBHOOK_MULTI_SECRET_GITLAB already set"
+fi
+
 WEBHOOK_PORT="$(env_get WEBHOOK_PORT || true)"
 if [ -z "$WEBHOOK_PORT" ]; then
   WEBHOOK_PORT=8789
@@ -176,37 +188,22 @@ else
   node src/provisioning-webhook/sync-repos.mjs add "$REPO"
 fi
 
-step "6. Starting the receiver"
+step "6. Handing off to systemd"
 
-RECEIVER_LOG="$PWD/.receiver.log"
-RECEIVER_PID_FILE="$PWD/.receiver.pid"
+# The bootstrap tunnel above only existed to get a url for step 5's first registration.
+# hermes-tunnel.service starts its own cloudflared and re-points every webhook at it through
+# hermes-webhook-sync.service (see its ExecStartPost) -- running both at once would mean two
+# competing tunnels, so this one stops right before the persistent one takes over.
+node src/provisioning-webhook/tunnel-lifecycle.mjs stop || true
 
-if command -v lsof >/dev/null 2>&1; then
-  busy_pid="$(lsof -nP -iTCP:"$WEBHOOK_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
-else
-  busy_pid="$(ss -lntp 2>/dev/null | grep ":$WEBHOOK_PORT " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
-fi
-
-if [ -n "${busy_pid:-}" ]; then
-  cmd="$(ps -p "$busy_pid" -o args= 2>/dev/null || true)"
-  case "$cmd" in
-    *receiver.mjs*)
-      echo "$busy_pid" > "$RECEIVER_PID_FILE"
-      info "receiver already running on 127.0.0.1:$WEBHOOK_PORT (pid $busy_pid), leaving it alone"
-      ;;
-    *)
-      die "Port $WEBHOOK_PORT is already taken by pid $busy_pid ($cmd), not the receiver. Free it, or change WEBHOOK_PORT in .env."
-      ;;
-  esac
-else
-  nohup node src/provisioning-webhook/receiver.mjs >>"$RECEIVER_LOG" 2>&1 &
-  RECEIVER_PID=$!
-  disown
-  sleep 1
-  kill -0 "$RECEIVER_PID" 2>/dev/null || die "The receiver did not start. See $RECEIVER_LOG"
-  echo "$RECEIVER_PID" > "$RECEIVER_PID_FILE"
-  info "receiver started, pid $RECEIVER_PID, logs at $RECEIVER_LOG"
-fi
+# Renders ops/systemd/*.in, enables lingering (so the user manager exists even with nobody
+# logged in) and starts the hermes-webhook.target chain: preflight -> tunnel -> webhook-sync
+# -> receiver. Everything from here on survives a reboot with no terminal ever open. See
+# ops/README.md for the full chain and why each dependency is the way it is.
+ops/preflight.sh || die "preflight failed, see above"
+ops/install-systemd.sh || die "could not install the systemd units"
+sudo loginctl enable-linger "$USER"
+systemctl --user enable --now hermes-webhook.target
 
 TRIGGER="$(node src/review/config.mjs get trigger 2>/dev/null || true)"
 TRIGGER="${TRIGGER:-/review}"
@@ -215,43 +212,27 @@ cat <<EOF
 
   Ready.
 
-  Tunnel    $PUBLIC_URL
-  Receiver  127.0.0.1:$WEBHOOK_PORT, logs at $RECEIVER_LOG
+  Receiver  127.0.0.1:$WEBHOOK_PORT, managed by systemd --user (hermes-webhook.target)
   Repos     node src/provisioning-webhook/sync-repos.mjs list
+  Status    systemctl --user status hermes-receiver
+  Logs      journalctl --user -u hermes-receiver -f
 
-  Comment $TRIGGER on a pull request of a registered repository. This keeps running after
-  this terminal closes. To stop it:
-
-    kill \$(cat $RECEIVER_PID_FILE) && node src/provisioning-webhook/tunnel-lifecycle.mjs stop
+  Comment $TRIGGER on a pull request or merge request of a registered repository. This
+  survives reboots on its own; there is nothing left to keep open or restart by hand.
 
   To register another repository later: REPO=owner/name node src/provisioning-webhook/sync-repos.mjs add \$REPO
+  (GitLab: node src/provisioning-webhook/sync-repos.mjs add gitlab@host:group/project, GITLAB_TOKEN__<HOST> in .env by hand)
 
-  Want this to survive a reboot with no terminal open at all? See the commented section at
-  the bottom of this script, and ops/README.md.
+  To stop everything: systemctl --user disable --now hermes-webhook.target
 
 EOF
 
-echo alias lr='node /home/ubuntu/digiteka-pr-autoreview/src/provisioning-webhook/sync-repos.mjs list' >> ~/.bashrc
-echo alias herstat='systemctl --user list-units 'hermes-*' --all' >> ~/.bashrc
-echo alias vpr='node /home/ubuntu/digiteka-pr-autoreview/src/provisioning-webhook/review-status.mjs' >> ~/.bashrc
+# Idempotent: re-running ./setup.sh after these lines already landed must not duplicate them.
+add_alias() {
+  local name="$1" cmd="$2"
+  grep -qxF "alias $name='$cmd'" ~/.bashrc 2>/dev/null || echo "alias $name='$cmd'" >> ~/.bashrc
+}
+add_alias lr "node $PWD/src/provisioning-webhook/sync-repos.mjs list"
+add_alias herstat "systemctl --user list-units 'hermes-*' --all"
+add_alias vpr "node $PWD/src/provisioning-webhook/review-status.mjs"
 source ~/.bashrc
-
-# ---------------------------------------------------------------------------------------
-# 7. systemd, disabled on purpose.
-#
-# The user explicitly does not want systemd for now: everything above runs as plain
-# background processes (nohup + disown), which is enough as long as a terminal opens this
-# script at least once after every reboot.
-#
-# Uncomment the block below once that stops being good enough. It runs the same preflight
-# this script leans on by hand, renders the units in ops/systemd/*.in, enables lingering (so
-# the user manager exists even when nobody is logged in) and starts the hermes-webhook.target
-# chain: preflight -> tunnel -> webhook-sync -> receiver. See ops/README.md for the full
-# chain and why each dependency is the way it is.
-#
-# step "7. systemd"
-ops/preflight.sh || die "preflight failed, see above"
-ops/install-systemd.sh || die "could not install the systemd units"
-sudo loginctl enable-linger "$USER"
-systemctl --user enable --now hermes-webhook.target
-# ---------------------------------------------------------------------------------------

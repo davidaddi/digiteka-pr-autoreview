@@ -33,9 +33,10 @@ MAX_FINDINGS="$(node src/review/config.mjs get max_findings)"
 SKEPTICS="$(node src/review/config.mjs get skeptics)"
 
 SANDBOX="$PWD"
-DIFF="$PWD/.pr.diff"
-FINDINGS="$PWD/.findings.json"
-RUN="$PWD/.run.json"
+mkdir -p "$SANDBOX/runs"
+DIFF="$SANDBOX/runs/.pr.diff"
+FINDINGS="$SANDBOX/runs/.findings.json"
+RUN="$SANDBOX/runs/.run.json"
 
 if [ "$PROVIDER" = gitlab ]; then
   node src/review/gitlab.mjs diff "$PR" > "$DIFF"
@@ -128,7 +129,7 @@ then have the judge dedup and rank what survives. Files matching '$BLOCKING' are
 everything else is advisory. Keep at most $MAX_FINDINGS findings.
 Write the final JSON array to $FINDINGS and nothing else to that file." orchestrator
     [ -s "$FINDINGS" ] || { echo "the review produced no findings file" >&2; exit 1; }
-    printf '%s\n%s\n' "$MODEL" "$(( $(date +%s) - STARTED ))" > "$SANDBOX/.run.meta"
+    printf '%s\n%s\n' "$MODEL" "$(( $(date +%s) - STARTED ))" > "$SANDBOX/runs/.run.meta"
     ;;
 
   fix)

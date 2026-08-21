@@ -1,51 +1,63 @@
 @startuml sequence
 
 actor Admin
-participant "WebServer" as Web
-participant "SyncRepos" as Sync
+participant "SyncRepos\nsync-repos.mjs" as Sync
 participant "RepoRegistry\n(repos.yml)" as Reg
-participant "GitHubProvisioner" as Prov
-participant "RunnerLifecycle" as Life
-participant "GitHub API" as GH
+participant "HooksStore\n(webhooks.json)" as Store
+participant "TunnelLifecycle" as Tunnel
+participant "GitHub/GitLab\nWebhook API" as API
 
-== Ajout d'un repo ==
+== Enregistrement d'un repo (setup.sh / add) ==
 
-Admin -> Web : ajoute "org/repo-x"
-Web -> Sync : provision("org/repo-x")
-Sync -> Reg : add(entry)
-Sync -> Prov : commitWorkflow(repo)
-Prov -> GH : PUT contents .github/workflows/review.yml
-Sync -> Prov : setRepoVars(repo)
-Prov -> GH : POST actions/variables
-Sync -> Prov : createRegistrationToken(repo)
-Prov -> GH : POST actions/runners/registration-token
-GH --> Prov : token
-Sync -> Life : start(repo, token)
-Life -> Life : spawn runner process (label hermes-review)
-Life --> Sync : RunnerInstance(pid, up)
-Sync --> Web : "repo-x actif"
-Web --> Admin : statut affiché
+Admin -> Sync : add("owner/name" ou "gitlab@host:group/project")
+Sync -> Reg : upsert(entry, status=pending)
+Admin -> Sync : sync(target?)
+Sync -> Reg : read()
+Sync -> Tunnel : url()
+Tunnel --> Sync : https://<tunnel>.trycloudflare.com
+Sync -> Store : get(key)
+alt hook déjà connu
+  Sync -> API : GET webhook(id)
+  Sync -> API : PUT/PATCH url si changée
+else pas de hook connu
+  Sync -> API : POST créer webhook(url, secret)
+end
+Sync -> Store : set(key, {hookId, url})
+Sync -> Reg : upsert(entry, status=active)
+Sync --> Admin : "webhook <id> créé/re-pointé"
 
-== Exécution (commentaire /review sur repo-x) ==
+== Exécution (commentaire /review sur une PR/MR) ==
 
 actor Utilisateur
-participant "GitHub" as GHub
-participant "RunnerInstance\n(repo-x)" as Runner
+participant "GitHub/GitLab" as Forge
+participant "Receiver\nreceiver.mjs" as Recv
 participant "Dispatcher\ndispatch.mjs" as Disp
+participant "Hermes\n(CLI + Claude Code)" as Hermes
 participant "ReviewScript\nreview.sh" as Rev
 participant "Orchestrator +\nFinders/Skeptic/Judge" as Orch
-participant "GitHubPublisher\ngithub.mjs" as Pub
+participant "Publisher\ngithub.mjs / gitlab.mjs" as Pub
 
-Utilisateur -> GHub : commente "/review" sur PR
-GHub -> Runner : déclenche job (issue_comment)
-Runner -> GHub : réaction 👀
-Runner -> Disp : node dispatch.mjs <pr> review
-Disp -> Rev : bash review.sh <pr> review
-Rev -> Rev : gh pr diff -> .pr.diff
+Utilisateur -> Forge : commente "/review" sur la PR/MR
+Forge -> Recv : POST / (payload signé HMAC ou X-Gitlab-Token)
+Recv -> Recv : signatureMatches() / tokenMatches()
+Recv -> Recv : githubEvent()/gitlabEvent() -> {repo, host, pr, command}
+Recv -> Reg : repo actif dans repos.yml ?
+Recv -> Forge : vérifie le rôle de l'auteur (Developer+)
+Recv --> Forge : 202 queued
+Recv -> Forge : réaction 👀 sur le commentaire
+Recv -> Recv : enqueue(event) (une chaîne par repo#pr)
+Recv -> Disp : dispatch(event)
+Disp -> Disp : écrit .runtime.<repo>-<pr>.env (token, forge, host)
+Disp -> Hermes : spawn -z "<prompt orchestration>" --yolo -c "pr-<repo>-<pr>"
+Hermes -> Rev : bash review.sh <pr> review
+Rev -> Rev : diff -> runs/.pr.diff
 Rev -> Orch : fan-out finders -> skeptic -> judge
-Orch --> Rev : .findings.json
-Rev --> Disp : exit 0
-Disp -> Pub : node github.mjs post <pr>
-Pub -> GHub : POST /pulls/<pr>/reviews (commentaires + statut)
-GHub --> Utilisateur : review postée sur les lignes
+Orch --> Rev : runs/.findings.json
+Rev --> Hermes : exit 0
+Hermes -> Pub : node github.mjs/gitlab.mjs post <pr>
+Pub -> Forge : publie commentaires + statut
+Pub -> Disp : touche le marqueur de publication
+Disp --> Recv : résolu (marqueur présent)
+Forge --> Utilisateur : review postée sur les lignes
+
 @enduml

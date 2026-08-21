@@ -19,11 +19,11 @@ export function readFindings(path) {
 
 export function runStats() {
   try {
-    const [model, seconds] = readFileSync(process.env.META_FILE ?? '.run.meta', 'utf8').trim().split('\n')
+    const [model, seconds] = readFileSync(process.env.META_FILE ?? 'runs/.run.meta', 'utf8').trim().split('\n')
     const elapsed = Number(seconds)
 
     let tokens = 0
-    for (const line of readFileSync(process.env.RUN_FILE ?? '.run.json', 'utf8').split('\n')) {
+    for (const line of readFileSync(process.env.RUN_FILE ?? 'runs/.run.json', 'utf8').split('\n')) {
       if (!line.includes('"type":"result"')) continue
       try {
         const u = JSON.parse(line).usage ?? {}

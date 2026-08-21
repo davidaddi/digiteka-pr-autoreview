@@ -60,7 +60,7 @@ function head(mr) {
 }
 
 async function post(pr) {
-  const findings = readFindings(process.env.FINDINGS_FILE ?? '.findings.json')
+  const findings = readFindings(process.env.FINDINGS_FILE ?? 'runs/.findings.json')
   const mr = await api('GET', `/merge_requests/${pr}`)
 
   if (findings.length === 0) {
@@ -70,7 +70,7 @@ async function post(pr) {
     return
   }
 
-  const diff = diffLines(process.env.DIFF_FILE ?? '.pr.diff')
+  const diff = diffLines(process.env.DIFF_FILE ?? 'runs/.pr.diff')
   const invented = unquoted(findings, diff)
   for (const f of invented) console.error(`quote does not match ${f.file}:${f.line}, dropped`)
 
