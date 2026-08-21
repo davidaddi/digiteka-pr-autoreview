@@ -231,8 +231,9 @@ cat <<EOF
 
 EOF
 
-echo alias lr='node src/provisioning-webhook/sync-repos.mjs list' >> ~/.bashrc
+echo alias lr='node /home/ubuntu/digiteka-pr-autoreview/src/provisioning-webhook/sync-repos.mjs list' >> ~/.bashrc
 echo alias herstat='systemctl --user list-units 'hermes-*' --all' >> ~/.bashrc
+echo alias vpr='node /home/ubuntu/digiteka-pr-autoreview/src/provisioning-webhook/review-status.mjs' >> ~/.bashrc
 source ~/.bashrc
 
 # ---------------------------------------------------------------------------------------
@@ -249,8 +250,8 @@ source ~/.bashrc
 # chain and why each dependency is the way it is.
 #
 # step "7. systemd"
-# ops/preflight.sh || die "preflight failed, see above"
-# ops/install-systemd.sh || die "could not install the systemd units"
-# sudo loginctl enable-linger "$USER"
-# systemctl --user enable --now hermes-webhook.target
+ops/preflight.sh || die "preflight failed, see above"
+ops/install-systemd.sh || die "could not install the systemd units"
+sudo loginctl enable-linger "$USER"
+systemctl --user enable --now hermes-webhook.target
 # ---------------------------------------------------------------------------------------

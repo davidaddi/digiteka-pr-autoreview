@@ -1,0 +1,15 @@
+[
+  {
+    "file": "demo/cart.js",
+    "line": 26,
+    "start_line": 21,
+    "severity": "concern",
+    "dimension": "correctness",
+    "blocking": false,
+    "claim": "`module.exports` in a file Node evaluates as an ES module throws at load time, making the whole file unloadable, and `averageOrderValue` is never actually exported.",
+    "impact": "demo/cart.js can no longer be loaded at all: `node demo/cart.js`, `import` and `require` each die with a ReferenceError and exit 1, taking the untouched subtotal, applyDiscount, topSpenders and logOrder exports down with them. Nothing in the repo loads this fixture today, so no user is affected yet; the first thing that does gets an immediate hard failure, and the new function is unreachable either way.",
+    "quote": "module.exports.averageOrderValue = averageOrderValue",
+    "why": "The file already uses ESM syntax (`export function subtotal`, `export function applyDiscount`, `export async function logOrder`), and there is no package.json anywhere in the repo or in any parent directory, so no `\"type\"` field pins the module system. Node's automatic module-syntax detection (default since 23; this box runs 26.7.0) sees the `export` keywords and reparses the type-less .js as an ES module, where `module` is simply unbound. Because the assignment sits at top level, it runs during module evaluation, so the failure is unconditional rather than input-dependent. Reproducing on the exact head bytes gives `ReferenceError: module is not defined in ES module scope` at line 26 on all three entry paths (`node cart.js`, `import` from an .mjs, `require` from a .cjs), each exiting 1. There is a second defect on the same block: `averageOrderValue` is declared without `export`, so even if line 26 were merely deleted the function would still be exported by no path and would sit as dead code. Severity is held at concern rather than must-fix only because demo/cart.js is a throwaway pipeline fixture with no importers and no tests, and setup-demo.sh:162-163 only cp's demo/.seed/cart.js over it and git-adds it without ever executing it.",
+    "suggestion": "\nexport function averageOrderValue(orders) {\n  const total = orders.reduce((sum, o) => sum + o.amount, 0)\n  return total / orders.length\n}"
+  }
+]

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const HERMES = process.env.HERMES_BIN ?? 'hermes'
@@ -50,6 +50,15 @@ function runtimeEnvFile(root, repo, pr) {
   return join(root, `.runtime.${repo.replaceAll('/', '-')}-${pr}.env`)
 }
 
+// hermes reports the two commands it ran in a text summary, but its own exit code is 0
+// whether or not either of them actually succeeded -- there is no way to tell success from
+// "hermes decided it was done" by watching this process alone. github.mjs/gitlab.mjs touch
+// this file right before their own successful exit, so its absence after hermes closes means
+// nothing reached the pull/merge request, regardless of what hermes's exit code says.
+function publishMarker(root, repo, pr) {
+  return join(root, `.published.${repo.replaceAll('/', '-')}-${pr}.marker`)
+}
+
 export function runHermes({ repo, pr, action, argument, root, provider = 'github', host = 'github.com' }) {
   const session = `pr-${repo.replaceAll('/', '-')}-${pr}`
   const args = ['-z', prompt({ repo, pr, action, argument, root, provider }), '--yolo', '-c', session]
@@ -71,9 +80,13 @@ export function runHermes({ repo, pr, action, argument, root, provider = 'github
     { mode: 0o600 },
   )
 
+  const marker = publishMarker(root, repo, pr)
+  rmSync(marker, { force: true })
+
   const env = {
     ...process.env,
     RUNTIME_ENV_FILE: runtimeEnv,
+    PUBLISH_MARKER: marker,
     TERMINAL_TIMEOUT: String(TIMEOUT_MS / 1000),
     TERMINAL_LIFETIME_SECONDS: String(TIMEOUT_MS / 1000 + 300),
   }
@@ -91,8 +104,11 @@ export function runHermes({ repo, pr, action, argument, root, provider = 'github
     child.on('close', (code, signal) => {
       clearTimeout(timer)
       cleanup()
-      if (code === 0) return resolve()
-      reject(new Error(signal === 'SIGKILL' ? `no answer after ${TIMEOUT_MS / 60000} minutes` : `exit ${code}`))
+      if (signal === 'SIGKILL') return reject(new Error(`no answer after ${TIMEOUT_MS / 60000} minutes`))
+      if (code !== 0) return reject(new Error(`exit ${code}`))
+      if (!existsSync(marker)) return reject(new Error('hermes exited 0 but never published a result to the pull/merge request'))
+      rmSync(marker, { force: true })
+      resolve()
     })
   })
 }

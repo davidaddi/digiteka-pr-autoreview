@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { bullets, diffLines, readFindings, runStats, summary, textAt, unquoted } from './format.mjs'
 
 // github.mjs for GitLab, same three subcommands and two more. The two extra exist because the
@@ -145,14 +145,23 @@ async function branch(pr) {
   console.log(mr.source_branch)
 }
 
+// hermes's own exit code does not reflect whether this actually ran (see dispatch.mjs), so
+// dispatch.mjs looks for this file instead to decide whether anything reached the merge
+// request. Only touched on the success path, right before this process's own exit 0. diff
+// and branch never touch this: they only read, dispatch.mjs does not wait on them for proof
+// that something was published.
+function markPublished() {
+  if (process.env.PUBLISH_MARKER) writeFileSync(process.env.PUBLISH_MARKER, '')
+}
+
 const [command, pr, ...rest] = process.argv.slice(2)
 
 if (command === 'post' && pr) {
-  post(pr).catch(exit)
+  post(pr).then(markPublished).catch(exit)
 } else if (command === 'fail' && pr) {
-  fail(pr, rest.join(' ') || 'unknown reason').catch(exit)
+  fail(pr, rest.join(' ') || 'unknown reason').then(markPublished).catch(exit)
 } else if (command === 'say' && pr && rest.length) {
-  say(pr, rest.join(' ')).catch(exit)
+  say(pr, rest.join(' ')).then(markPublished).catch(exit)
 } else if (command === 'diff' && pr) {
   diff(pr).catch(exit)
 } else if (command === 'branch' && pr) {

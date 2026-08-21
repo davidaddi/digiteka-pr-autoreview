@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { BADGE, bullets, diffLines, readFindings, runStats, summary, textAt, unquoted } from './format.mjs'
 
 const RUNTIME_ENV_FILE = process.env.RUNTIME_ENV_FILE ?? '.runtime.env'
@@ -161,14 +161,21 @@ async function say(pr, message) {
   console.log(`commented on #${pr}`)
 }
 
+// hermes's own exit code does not reflect whether this actually ran (see dispatch.mjs), so
+// dispatch.mjs looks for this file instead to decide whether anything reached the pull
+// request. Only touched on the success path, right before this process's own exit 0.
+function markPublished() {
+  if (process.env.PUBLISH_MARKER) writeFileSync(process.env.PUBLISH_MARKER, '')
+}
+
 const [command, pr, ...rest] = process.argv.slice(2)
 
 if (command === 'post' && pr) {
-  post(pr).catch(exit)
+  post(pr).then(markPublished).catch(exit)
 } else if (command === 'fail' && pr) {
-  fail(pr, rest.join(' ') || 'unknown reason').catch(exit)
+  fail(pr, rest.join(' ') || 'unknown reason').then(markPublished).catch(exit)
 } else if (command === 'say' && pr && rest.length) {
-  say(pr, rest.join(' ')).catch(exit)
+  say(pr, rest.join(' ')).then(markPublished).catch(exit)
 } else {
   console.error('usage: github.mjs post <pr> | fail <pr> <reason> | say <pr> <message>')
   process.exit(1)

@@ -27,7 +27,7 @@ note() {
 # disagree about which value is in effect:
 #   - the first '=' splits key from value, later ones belong to the value
 #   - a line whose first non-blank character is '#' is a comment
-#   - the value is trimmed, and one pair of surrounding double quotes is stripped
+#   - the value is trimmed, and one pair of surrounding double or single quotes is stripped
 #   - the first matching line wins (loadEnv uses ??=, so a later duplicate is ignored)
 #   - a variable already present in the environment beats the file, again like ??=
 #
@@ -45,6 +45,8 @@ env_value() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   if [ ${#value} -ge 2 ] && [ "${value:0:1}" = '"' ] && [ "${value: -1}" = '"' ]; then
+    value="${value:1:${#value}-2}"
+  elif [ ${#value} -ge 2 ] && [ "${value:0:1}" = "'" ] && [ "${value: -1}" = "'" ]; then
     value="${value:1:${#value}-2}"
   fi
   printf '%s' "$value"
