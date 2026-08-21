@@ -158,6 +158,33 @@ Keep it alive with a `systemd --user` service.
 4. Set repository variables `HERMES_PROVIDER` and `HERMES_MODEL`. There is no secret to create,
    the workflow uses the token GitHub gives it.
 
+## GitLab repositories
+
+Only in the multi-repo webhook mode (`src/provisioning-webhook/`), where one receiver serves
+every repository in `repos.yml`. GitHub and GitLab entries live in the same file, on the same
+port, behind the same tunnel:
+
+```
+davidaddi/demo:active                                github.com, the default spelling
+gitlab@gitlab.com:group/project:active               gitlab.com
+gitlab@gitlab.digiteka.com:group/sub/project:active  self-hosted, subgroups and all
+
+node src/provisioning-webhook/sync-repos.mjs add gitlab@gitlab.digiteka.com:group/sub/project
+```
+
+Two things to put in `.env` before that command, or it fails naming the one it wants:
+
+| Variable | Why |
+| --- | --- |
+| `WEBHOOK_MULTI_SECRET_GITLAB` | one for all GitLab instances, never the GitHub one: GitLab sends the secret itself in a header on every delivery |
+| `GITLAB_TOKEN__GITLAB_COM`, `GITLAB_TOKEN__GITLAB_DIGITEKA_COM` | one PAT per instance, `api` scope. The name is the host uppercased, dots and dashes as underscores |
+
+Tell the user two things about it. Commenting `/review` needs **Developer or above** on the
+project — the receiver checks the API and refuses anyone it cannot confirm, which is what a
+Guest or a stranger looks like. And a GitLab review comes back as **one merge request note**,
+summary table and one line per finding, not a comment per line; line-anchored discussions are
+not implemented yet.
+
 ## Settings worth changing
 
 `review.config.yml`, the only file the user edits:

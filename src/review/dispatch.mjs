@@ -8,14 +8,18 @@ const TIMEOUT_MS = Number(process.env.HERMES_TIMEOUT ?? 2400) * 1000
 const PROVIDER = process.env.HERMES_PROVIDER
 const MODEL = process.env.HERMES_MODEL
 
-export function prompt({ repo, pr, action, argument, root }) {
+export function prompt({ repo, pr, action, argument, root, provider = 'github' }) {
+  // One file per forge, same three subcommands: which one publishes is the only difference
+  // between reviewing a GitHub pull request and a GitLab merge request from here.
+  const cli = `src/review/${provider}.mjs`
+  const request = provider === 'gitlab' ? 'merge request' : 'pull request'
   const step2 =
     action === 'review'
-      ? `2. node src/review/github.mjs post ${pr}, which publishes the findings on the pull request. Run it even if step 1 found nothing.`
-      : `2. node src/review/github.mjs say ${pr} "<outcome>", replacing <outcome> with what step 1 actually printed. Quote its file paths and numbers exactly as they appeared and write nothing the output does not contain, no reconstructed paths and no guessed file names. Never report success for a non-zero exit code.`
+      ? `2. node ${cli} post ${pr}, which publishes the findings on the ${request}. Run it even if step 1 found nothing.`
+      : `2. node ${cli} say ${pr} "<outcome>", replacing <outcome> with what step 1 actually printed. Quote its file paths and numbers exactly as they appeared and write nothing the output does not contain, no reconstructed paths and no guessed file names. Never report success for a non-zero exit code.`
 
   return [
-    `You orchestrate the "${action}" action on ${repo} pull request #${pr}${argument ? `, targeting "${argument}"` : ''}.`,
+    `You orchestrate the "${action}" action on ${repo} ${request} #${pr}${argument ? `, targeting "${argument}"` : ''}.`,
     'You dispatch and you publish. You never read or judge code yourself.',
     `From ${root}, run exactly these two commands, in order, and nothing else.`,
     `1. bash src/review/review.sh ${pr} ${action} ${argument || ''}`.trim() + '.',
@@ -39,21 +43,31 @@ export function prompt({ repo, pr, action, argument, root }) {
 // hermes has no reason to filter. The filename is keyed by repo+pr, the same key
 // receiver.mjs's enqueue() already serializes on, so two concurrent reviews (different repos
 // or different PRs) never share a file.
+//
+// A GitLab project can be nested in subgroups, so every slash goes: group/sub/proj would
+// otherwise name a file in a directory that does not exist and the write would fail.
 function runtimeEnvFile(root, repo, pr) {
-  return join(root, `.runtime.${repo.replace('/', '-')}-${pr}.env`)
+  return join(root, `.runtime.${repo.replaceAll('/', '-')}-${pr}.env`)
 }
 
-export function runHermes({ repo, pr, action, argument, root }) {
-  const session = `pr-${repo.replace('/', '-')}-${pr}`
-  const args = ['-z', prompt({ repo, pr, action, argument, root }), '--yolo', '-c', session]
+export function runHermes({ repo, pr, action, argument, root, provider = 'github', host = 'github.com' }) {
+  const session = `pr-${repo.replaceAll('/', '-')}-${pr}`
+  const args = ['-z', prompt({ repo, pr, action, argument, root, provider }), '--yolo', '-c', session]
 
   if (PROVIDER && MODEL) args.push('--provider', PROVIDER, '--model', MODEL)
   else if (PROVIDER || MODEL) throw new Error('HERMES_PROVIDER and HERMES_MODEL go together')
 
+  // gh reads GH_TOKEN, git and gitlab.mjs read GITLAB_TOKEN: one credential each, and never
+  // the other forge's, so a review of one repository cannot carry a token for another.
+  const credentials =
+    provider === 'gitlab'
+      ? `GITLAB_TOKEN="${process.env.GITLAB_TOKEN}"\n`
+      : `GITHUB_TOKEN="${process.env.GITHUB_TOKEN}"\nGH_TOKEN="${process.env.GITHUB_TOKEN}"\n`
+
   const runtimeEnv = runtimeEnvFile(root, repo, pr)
   writeFileSync(
     runtimeEnv,
-    `REPO="${repo}"\nGITHUB_TOKEN="${process.env.GITHUB_TOKEN}"\nGH_TOKEN="${process.env.GITHUB_TOKEN}"\nPATH="${process.env.PATH}"\n`,
+    `REPO="${repo}"\nREPO_PROVIDER="${provider}"\nREPO_HOST="${host}"\n${credentials}PATH="${process.env.PATH}"\n`,
     { mode: 0o600 },
   )
 
@@ -90,10 +104,16 @@ if (process.argv[1]?.endsWith('dispatch.mjs')) {
     console.error('usage: REPO=owner/name dispatch.mjs <pr> [review|fix|revert] [target]')
     process.exit(1)
   }
-  runHermes({ repo, pr, action, argument: rest.join(' '), root: process.env.SANDBOX_ROOT ?? process.cwd() }).catch(
-    (error) => {
-      console.error(error.message)
-      process.exit(1)
-    },
-  )
+  runHermes({
+    repo,
+    pr,
+    action,
+    argument: rest.join(' '),
+    root: process.env.SANDBOX_ROOT ?? process.cwd(),
+    provider: process.env.REPO_PROVIDER ?? 'github',
+    host: process.env.REPO_HOST ?? 'github.com',
+  }).catch((error) => {
+    console.error(error.message)
+    process.exit(1)
+  })
 }

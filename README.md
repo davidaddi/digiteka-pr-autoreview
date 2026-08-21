@@ -225,6 +225,41 @@ The quick tunnel changes hostname on every restart. `./setup.sh` re-points every
 webhook at the new one automatically; running `node src/provisioning-webhook/sync-repos.mjs
 sync` does the same thing without going through the rest of the script.
 
+### GitLab, on the same receiver
+
+GitHub repositories and GitLab projects share one process, one port, one tunnel and one
+`repos.yml`. The line says which:
+
+```
+davidaddi/demo:active                                github.com, the default spelling
+gitlab@gitlab.com:group/project:active               gitlab.com
+gitlab@gitlab.digiteka.com:group/sub/project:active  a self-hosted instance, subgroups and all
+```
+
+```bash
+node src/provisioning-webhook/sync-repos.mjs add gitlab@gitlab.digiteka.com:group/sub/project
+```
+
+Two more things in `.env`:
+
+- `WEBHOOK_MULTI_SECRET_GITLAB`, one shared secret for every GitLab instance, and deliberately
+  not the GitHub one: GitLab does not sign the body, it puts the secret itself in an
+  `X-Gitlab-Token` header on every delivery, and GitHub's is meant never to leave this machine.
+- `GITLAB_TOKEN__<HOST>`, one personal access token per instance, `api` scope, the host
+  uppercased with dots and dashes turned into underscores — `GITLAB_TOKEN__GITLAB_COM`,
+  `GITLAB_TOKEN__GITLAB_DIGITEKA_COM`. Two instances are two accounts, so one token cannot do.
+
+The hook created subscribes to note events only. GitLab's payload does not say what the
+commenter may do on the project, so the receiver asks the API before dispatching and requires
+Developer (access level 30) or above, inherited group memberships included; anything it cannot
+confirm is a no. On GitHub that answer is still read straight off the payload.
+
+One difference in what comes back: on GitLab the review is a single merge request note — the
+same summary table, then one line per finding — instead of a comment on each line. Anchoring
+there needs the diff's base, head and start shas and a position type that is wrong in ways
+nobody notices, so it is not done yet. The 👀, the `hermes-review` commit status, `/fix` and
+`/revert` all work the same.
+
 ## Running it unattended
 
 Everything above still needs a terminal held open once, after every reboot, to run

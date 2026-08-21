@@ -3,11 +3,15 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT } from '../provisioning/registry.mjs'
 
-// repos.yml stays the registry: one line per repository, owner/name:status, parsed by the
-// hand-rolled loader in src/review/config.mjs. It has nowhere to put a hook id without
+// repos.yml stays the registry: one line per repository, [provider@host:]path:status, parsed
+// by the hand-rolled loader in src/review/config.mjs. It has nowhere to put a hook id without
 // teaching that loader a new shape, so the ids live here instead, in a sidecar only the
 // webhook mode reads. Losing this file does not break a review, but it does orphan every
-// webhook it described: GitHub keeps them, and nothing here knows their ids any more.
+// webhook it described: the forge keeps them, and nothing here knows their ids any more.
+//
+// Keys are registry.mjs's key(entry), provider@host:owner/name, not the bare path: the same
+// group/project can exist on github.com, on gitlab.com and on a self-hosted GitLab at once,
+// and three hooks sharing one entry here would each delete the others' id.
 export const FILE = process.env.WEBHOOKS_FILE ?? join(ROOT, 'webhooks.json')
 
 export function read(file = FILE) {
@@ -31,22 +35,22 @@ export function write(hooks, file = FILE) {
   return hooks
 }
 
-export function get(repo, file = FILE) {
-  return read(file)[repo] ?? null
+export function get(key, file = FILE) {
+  return read(file)[key] ?? null
 }
 
-export function set(repo, record, file = FILE) {
+export function set(key, record, file = FILE) {
   const hooks = read(file)
-  hooks[repo] = { ...record, updatedAt: new Date().toISOString() }
+  hooks[key] = { ...record, updatedAt: new Date().toISOString() }
   write(hooks, file)
-  return hooks[repo]
+  return hooks[key]
 }
 
-export function remove(repo, file = FILE) {
+export function remove(key, file = FILE) {
   const hooks = read(file)
-  if (!(repo in hooks)) return null
-  const gone = hooks[repo]
-  delete hooks[repo]
+  if (!(key in hooks)) return null
+  const gone = hooks[key]
+  delete hooks[key]
   write(hooks, file)
   return gone
 }

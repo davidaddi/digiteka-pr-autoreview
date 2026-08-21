@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync } from 'node:fs'
+import { BADGE, bullets, diffLines, readFindings, runStats, summary, textAt, unquoted } from './format.mjs'
 
 const RUNTIME_ENV_FILE = process.env.RUNTIME_ENV_FILE ?? '.runtime.env'
 if (existsSync(RUNTIME_ENV_FILE)) {
@@ -41,50 +42,6 @@ async function api(method, path, body) {
   return response.json()
 }
 
-function readFindings(path) {
-  const findings = JSON.parse(readFileSync(path, 'utf8'))
-  if (!Array.isArray(findings)) throw new Error(`${path} is not a JSON array`)
-  for (const finding of findings) {
-    if (!finding.file || !finding.claim || !finding.impact || !finding.quote) {
-      throw new Error(`finding without file, claim, impact or quote: ${JSON.stringify(finding)}`)
-    }
-  }
-  return findings
-}
-
-const BADGE = { 'must-fix': '🔴 must-fix', concern: '🟠 concern', nit: '⚪ nit' }
-
-function runStats() {
-  try {
-    const [model, seconds] = readFileSync(process.env.META_FILE ?? '.run.meta', 'utf8').trim().split('\n')
-    const elapsed = Number(seconds)
-
-    let tokens = 0
-    for (const line of readFileSync(process.env.RUN_FILE ?? '.run.json', 'utf8').split('\n')) {
-      if (!line.includes('"type":"result"')) continue
-      try {
-        const u = JSON.parse(line).usage ?? {}
-        tokens +=
-          (u.input_tokens ?? 0) +
-          (u.output_tokens ?? 0) +
-          (u.cache_creation_input_tokens ?? 0) +
-          (u.cache_read_input_tokens ?? 0)
-      } catch {}
-    }
-
-    return {
-      model,
-      time:
-        elapsed >= 60
-          ? `${Math.floor(elapsed / 60)}m${String(elapsed % 60).padStart(2, '0')}s`
-          : `${elapsed}s`,
-      tokens: tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}M` : `${Math.round(tokens / 1000)}k`,
-    }
-  } catch {
-    return null
-  }
-}
-
 function commentBody(finding) {
   const badge = BADGE[finding.severity] ?? '🟠 concern'
   const head = [badge, finding.dimension].filter(Boolean).join(' · ')
@@ -118,29 +75,6 @@ function commentBody(finding) {
   return lines.join('\n')
 }
 
-function diffLines(diffPath) {
-  const byFile = new Map()
-  let file = null
-  let line = 0
-
-  for (const raw of readFileSync(diffPath, 'utf8').split('\n')) {
-    if (raw.startsWith('+++ ')) {
-      file = raw.slice(4).replace(/^b\//, '').trim()
-      if (file === '/dev/null') file = null
-      if (file) byFile.set(file, new Map())
-      continue
-    }
-    const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)/)
-    if (hunk) {
-      line = Number(hunk[1])
-      continue
-    }
-    if (!file || !byFile.has(file)) continue
-    if (raw.startsWith('+') || raw.startsWith(' ')) byFile.get(file).set(line++, raw.slice(1))
-  }
-  return byFile
-}
-
 function anchor(finding) {
   const comment = { path: finding.file, line: finding.line, side: 'RIGHT', body: commentBody(finding) }
   if (Number.isInteger(finding.start_line) && finding.start_line < finding.line) {
@@ -162,16 +96,7 @@ async function post(pr) {
   }
 
   const diff = diffLines(process.env.DIFF_FILE ?? '.pr.diff')
-  const textAt = (f) => (Number.isInteger(f.line) ? diff.get(f.file)?.get(f.line) : undefined)
-
-  const stripMarker = (quote) => (quote.startsWith('+') || quote.startsWith('-') ? quote.slice(1) : quote)
-
-  const invented = findings.filter((f) => {
-    const text = textAt(f)
-    if (text === undefined) return false
-    const quote = String(f.quote)
-    return text.trim() !== quote.trim() && text.trim() !== stripMarker(quote).trim()
-  })
+  const invented = unquoted(findings, diff)
   for (const f of invented) console.error(`quote does not match ${f.file}:${f.line}, dropped`)
 
   const kept = findings.filter((f) => !invented.includes(f))
@@ -187,36 +112,13 @@ async function post(pr) {
 
   kept.forEach((f, i) => (f.id = `F${i + 1}`))
 
-  const anchored = kept.filter((f) => textAt(f) !== undefined)
-  const orphans = kept.filter((f) => textAt(f) === undefined)
+  const anchored = kept.filter((f) => textAt(diff, f) !== undefined)
+  const orphans = kept.filter((f) => textAt(diff, f) === undefined)
   const comments = anchored.map(anchor)
 
-  const stats = runStats()
-  const counts = [
-    `${kept.length} finding${kept.length > 1 ? 's' : ''}, ${blocking.length} blocking.`,
-    invented.length ? `${invented.length} dropped, quoted line not in the diff.` : '',
-    stats ? `${stats.time}, ${stats.tokens} tokens.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ')
+  const { counts, body } = summary({ kept, invented, orphans, stats: runStats() })
 
-  const table = [
-    '| id | sev | location | dimension |',
-    '| --- | --- | --- | --- |',
-    ...kept.map(
-      (f) =>
-        `| ${f.id} | ${BADGE[f.severity] ?? '🟠 concern'} | \`${f.file}:${f.line}\` | ${f.dimension ?? ''} |`,
-    ),
-  ].join('\n')
-
-  const parts = [`## 🔎 Review${stats ? ` — model \`${stats.model}\`` : ''}`, counts, '', table]
-  if (orphans.length) {
-    parts.push('', `Outside the diff, so not anchorable: ${orphans.map((f) => `\`${f.file}:${f.line}\``).join(', ')}`)
-  }
-  parts.push('', '> 🛠️ Accept a suggestion inline, or reply `/fix` to have the agent code and test the fixes (`/revert` to undo).')
-  const summary = parts.join('\n')
-
-  const review = { commit_id: pull.head.sha, body: summary, comments }
+  const review = { commit_id: pull.head.sha, body, comments }
   const events = blocking.length ? ['REQUEST_CHANGES', 'COMMENT'] : ['COMMENT']
   let posted = false
 
@@ -231,19 +133,18 @@ async function post(pr) {
   }
 
   if (!posted) {
-    const body = [summary, '', ...kept.map((f) => `- \`${f.file}:${f.line}\` ${f.claim}`)].join('\n')
-    await api('POST', `/issues/${pr}/comments`, { body })
+    await api('POST', `/issues/${pr}/comments`, { body: [body, '', ...bullets(kept)].join('\n') })
   }
 
   await conclude(pull.head.sha, blocking.length ? 'failure' : 'success', counts)
   console.log(`posted ${kept.length} findings on #${pr}, ${anchored.length} anchored`)
 }
 
-async function conclude(sha, state, summary) {
+async function conclude(sha, state, description) {
   await api('POST', `/statuses/${sha}`, {
     state,
     context: CHECK_NAME,
-    description: summary.slice(0, 140),
+    description: description.slice(0, 140),
   })
 }
 
