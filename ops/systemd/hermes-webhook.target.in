@@ -1,0 +1,32 @@
+# hermes-pr-review -- webhook multi-repo mode, one handle for the whole thing
+#
+# TEMPLATE. ops/install-systemd.sh renders it into ~/.config/systemd/user/ with the
+# placeholders below filled in. Edit this file, not the rendered copy, then re-install.
+#
+#   @PR_REVIEW_ROOT@  the repository checkout    -> @PR_REVIEW_ROOT@
+#   rendered       @RENDERED_AT@
+#
+# This is the only unit that needs enabling:
+#
+#   systemctl --user enable --now hermes-webhook.target
+#
+# It pulls in the preflight, the tunnel and the receiver; the tunnel pulls in the webhook
+# refresh itself. Stopping the target stops all of them, because each service declares
+# PartOf= this target.
+
+[Unit]
+Description=hermes-pr-review webhook mode (preflight, cloudflared tunnel, multi-repo receiver)
+Documentation=file://@PR_REVIEW_ROOT@/ops/README.md
+# Requires=, so that a machine that fails preflight shows up as a FAILED target instead of
+# a green one with nothing running underneath it. Safe here in a way it is not elsewhere:
+# the preflight is a oneshot that never auto-restarts, so there is no restart to propagate.
+Requires=hermes-preflight.service
+After=hermes-preflight.service
+
+# Wants= for the two long-lived ones: both carry Restart=always and recover on their own,
+# and a target that fails because cloudflared blinked would be noise, not signal.
+Wants=hermes-tunnel.service
+Wants=hermes-receiver.service
+
+[Install]
+WantedBy=default.target

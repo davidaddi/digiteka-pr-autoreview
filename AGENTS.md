@@ -1,171 +1,178 @@
-# Installing this, for an AI agent
+# Installer ceci, pour un agent IA
 
-You are setting this up on someone's machine. Read the whole file before running anything.
+Vous configurez ça sur la machine de quelqu'un. Lisez tout le fichier avant de lancer quoi que
+ce soit.
 
-Your goal: the user comments `/review` on one of their pull requests and gets a review back.
+Votre objectif : l'utilisateur commente `/review` sur une de ses pull requests et reçoit une
+revue en retour.
 
-## What this is
+## Ce que c'est
 
-A code reviewer that runs on the user's machine. Two processes do the work:
+Un relecteur de code qui tourne sur la machine de l'utilisateur. Deux processus font le travail :
 
-- **hermes** receives the command, dispatches, and publishes. It never reads code.
-- **claude** does the reading, opens files, runs tests, writes the findings.
+- **hermes** reçoit la commande, distribue, et publie. Ne lit jamais le code.
+- **claude** fait la lecture, ouvre les fichiers, lance les tests, écrit les findings.
 
-Nothing is deployed. No API key is used. Both run on subscription logins.
+Rien n'est déployé. Aucune clé API n'est utilisée. Les deux tournent sur des logins par
+abonnement.
 
-## Step 0. Pick the mode
-
-Ask the user which one, do not decide alone:
-
-| Mode | Needs | Posts as | Change requests |
-| --- | --- | --- | --- |
-| **webhook** (default) | nothing extra | the user | no, GitHub forbids it on your own PR |
-| **workflow** | a self-hosted runner | `github-actions[bot]` | yes |
-
-Everything below is the webhook mode. The workflow mode is at the end.
-
-## Step 1. Check the five binaries
+## Étape 1. Vérifier les cinq binaires
 
 ```bash
 for b in node gh cloudflared hermes claude; do printf '%-12s ' "$b"; command -v $b || echo MISSING; done
 ```
 
-If any is missing:
+Si l'un manque :
 
-| Binary | Install |
+| Binaire | Installation |
 | --- | --- |
-| `node`, `gh`, `cloudflared` | `brew install <name>` on macOS, the distro package elsewhere |
+| `node`, `gh`, `cloudflared` | `brew install <name>` sur macOS, le paquet de la distro ailleurs |
 | `hermes` | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` |
 | `claude` | `npm install -g @anthropic-ai/claude-code` |
 
-`hermes` and `claude` install into `~/.local/bin`, which is often absent from a non-interactive
-`PATH`. Export it before anything else:
+`hermes` et `claude` s'installent dans `~/.local/bin`, souvent absent d'un `PATH` non
+interactif. Exportez-le avant tout le reste :
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Then check the user is logged in to both. `claude` needs an interactive login you cannot do for
-them, so ask them to run `claude` once if `~/.claude/.credentials.json` does not exist.
+Puis vérifiez que l'utilisateur est connecté aux deux. `claude` a besoin d'un login interactif
+que vous ne pouvez pas faire à sa place — demandez-lui de lancer `claude` une fois si
+`~/.claude/.credentials.json` n'existe pas.
 
-## Step 2. Give hermes a brain
+## Étape 2. Donner un cerveau à hermes
 
-Check what is configured. **The key is `model.provider`, not `provider`:**
+Vérifiez ce qui est configuré. **La clé est `model.provider`, pas `provider`:**
 
 ```bash
 hermes config get model.provider
 ```
 
-If it prints `auto`, an error, or nothing, hermes has no usable brain. It only dispatches, so a
-small model is enough and a whole review costs a few cents. Ask the user to run **one** of these,
-never both:
+Si ça affiche `auto`, une erreur, ou rien, hermes n'a pas de cerveau utilisable. Il ne fait que
+distribuer, donc un petit modèle suffit et une revue complète coûte quelques centimes. Demandez
+à l'utilisateur de lancer **une** de ces commandes, jamais les deux :
 
 ```bash
-hermes auth add openrouter --type api-key    # prompts for the key, writes it to ~/.hermes/.env
-hermes model                                 # or an OAuth subscription they already have
+hermes auth add openrouter --type api-key    # demande la clé, l'écrit dans ~/.hermes/.env
+hermes model                                 # ou un abonnement OAuth qu'il a déjà
 ```
 
-Then:
+Puis :
 
 ```bash
 hermes config set model.provider openrouter
 hermes config set model.default moonshotai/kimi-k2.6
 ```
 
-**Do not** point hermes at Anthropic. That path needs Claude Max plus purchased extra credits,
-excludes Pro, and does not draw on the Max allowance. Keeping hermes on a different provider is
-cheaper and stops the two sides fighting over one quota.
+**Ne pointez pas** hermes vers Anthropic. Ce chemin a besoin de Claude Max plus des crédits
+achetés en plus, exclut Pro, et ne puise pas dans l'allocation Max. Garder hermes sur un
+fournisseur différent coûte moins cher et évite que les deux côtés se battent pour un seul
+quota.
 
-If the machine already runs hermes for something else, do not touch its config at all. Pass the
-brain per run instead:
+Si la machine fait déjà tourner hermes pour autre chose, ne touchez pas du tout à sa config.
+Passez le cerveau par exécution à la place :
 
 ```bash
 export HERMES_PROVIDER=openrouter HERMES_MODEL=moonshotai/kimi-k2.6
 ```
 
-## Step 3. Run it
+## Étape 3. Le lancer
 
 ```bash
 gh repo create my-sandbox --template iFeyz/hermes-pr-review --public --clone
 cd my-sandbox
-./setup.sh
+./setup-demo.sh
 ```
 
-`setup.sh` stays in the foreground and prints six steps. It ends on `Ready.` and the URL of a pull
-request. Tell the user to comment `/review` there, and to leave the terminal open.
+`setup-demo.sh` reste en avant-plan et affiche ses étapes. Il termine sur `Ready.` et l'URL
+d'une pull request. Dites à l'utilisateur de commenter `/review` là-bas, et de laisser le
+terminal ouvert.
 
-On an existing repository instead:
+Sur un repo existant, avec persistance après reboot (EC2, machine sans surveillance) :
 
 ```bash
-REPO=owner/name SKIP_DEMO=1 ./setup.sh
+REPO=owner/name ./setup.sh
 ```
 
-Ctrl-C removes the webhook and stops everything. Nothing is left behind.
+`./setup.sh` finit en passant la main à `systemd --user` : plus besoin de laisser un terminal
+ouvert après le premier lancement. Voir [README.md](README.md#2-installation) pour le détail
+des six étapes et [ops/README.md](ops/README.md) pour la chaîne systemd complète.
 
-## Step 4. Confirm it works
+## Étape 4. Confirmer que ça marche
 
-Within a second of the comment, a 👀 reaction appears on it. That is the receiver acknowledging.
+En moins d'une seconde après le commentaire, une réaction 👀 apparaît sur lui. C'est le
+receveur qui accuse réception.
 
-Then wait. A review takes about **15 minutes** on 350 changed lines. This is normal, it reads the
-code rather than skimming the diff. Do not restart anything during that time.
+Puis attendez. Une revue prend environ **15 minutes** sur 350 lignes changées. C'est normal,
+ça lit le code plutôt que de survoler le diff. Ne relancez rien pendant ce temps.
 
-You can watch progress from another shell:
+Vous pouvez suivre la progression depuis un autre shell :
 
 ```bash
-tail -f setup.log                 # if you redirected it
-ls -la .pr.diff .findings.json    # diff first, findings at the end
+journalctl --user -u hermes-receiver -f     # si géré par systemd (./setup.sh)
+ls -la runs/.pr.diff runs/.findings.json     # le diff d'abord, les findings à la fin
 ```
 
-## Failures you will actually hit
+## Les échecs que vous allez vraiment rencontrer
 
-| Symptom | Cause | What to do |
+| Symptôme | Cause | Quoi faire |
 | --- | --- | --- |
-| `Port 8787 is already taken` | a previous run left a receiver | kill that pid, or `PORT=8790 ./setup.sh` |
-| `Hermes has no provider yet` | step 2 not done | do step 2 |
-| `no ping confirmation yet` | GitHub was slow to deliver | not an error, it starts anyway |
-| Nothing happens after `/review` | webhook not reaching the machine | check the webhook deliveries on GitHub, look for 502 |
-| `command not found: hermes` | `~/.local/bin` missing from PATH | export it, see step 1 |
-| Review posted as a plain comment | GitHub refuses change requests on your own PR | expected in webhook mode, use the workflow mode |
-| The check is green despite a must-fix | `paths.blocking` still points at `demo/**` | point it at the real code in `review.config.yml` |
+| `Port 8787 is already taken` | un lancement précédent a laissé un tunnel/receveur (`setup-demo.sh`) | tuer ce pid, ou `PORT=8790 ./setup-demo.sh` |
+| `Hermes has no provider yet` | étape 2 pas faite | faire l'étape 2 |
+| rien ne se passe après `/review` | le webhook n'arrive pas jusqu'à la machine | vérifier les livraisons du webhook sur GitHub/GitLab, chercher un 502 |
+| `command not found: hermes` | `~/.local/bin` absent du PATH | l'exporter, voir l'étape 1 |
+| la revue est postée comme un simple commentaire | GitHub refuse les demandes de changement sur sa propre PR | attendu, c'est le comportement normal |
+| le check est vert malgré un must-fix | `paths.blocking` pointe encore vers `demo/**` | le pointer vers le vrai code dans `review.config.yml` |
 
-## Do not
+## À ne pas faire
 
-- **Do not** print, echo or log the user's tokens. `setup.sh` writes `.runtime.env` with mode 600,
-  leave it alone.
-- **Do not** edit `~/.hermes/config.yaml` on a machine that already runs hermes for something else.
-- **Do not** run two `setup.sh` on the same port.
-- **Do not** restart a review that looks stuck before 40 minutes. It is probably working.
-- **Do not** add `--output-format json` to the claude call. It silences the command and hermes
-  kills anything quiet for 60 seconds. The code already streams for that reason.
+- **Ne pas** afficher, échoter ou journaliser les tokens de l'utilisateur. `setup.sh` écrit
+  `.runtime.<repo>-<pr>.env` en mode 600, n'y touchez pas.
+- **Ne pas** modifier `~/.hermes/config.yaml` sur une machine qui fait déjà tourner hermes pour
+  autre chose.
+- **Ne pas** lancer deux `setup.sh`/`setup-demo.sh` sur le même port.
+- **Ne pas** relancer une revue qui semble bloquée avant 40 minutes. Elle travaille probablement.
+- **Ne pas** ajouter `--output-format json` à l'appel claude. Ça rend la commande silencieuse et
+  hermes tue tout ce qui reste silencieux 60 secondes. Le code diffuse déjà (`stream-json`) pour
+  cette raison.
 
-## The workflow mode
+## Les repos GitLab
 
-Only if the user wants the bot to post instead of them.
+Uniquement en mode webhook multi-repo (`src/provisioning-webhook/`), où un seul receveur sert
+tous les repos de `repos.yml`. Les entrées GitHub et GitLab vivent dans le même fichier, sur le
+même port, derrière le même tunnel :
 
-1. Clone this repo on the machine that will run the jobs, with hermes and claude logged in there.
-2. Register a runner on their repository, labelled `hermes-review`:
+```
+davidaddi/demo:active                                github.com, l'orthographe par défaut
+gitlab@gitlab.com:group/project:active               gitlab.com
+gitlab@gitlab.digiteka.com:group/sub/project:active  auto-hébergé, sous-groupes compris
 
-```bash
-gh api -X POST repos/OWNER/REPO/actions/runners/registration-token -q .token
-./config.sh --unattended --url https://github.com/OWNER/REPO --token <token> \
-  --name hermes-review --labels hermes-review --work _work
+node src/provisioning-webhook/sync-repos.mjs add gitlab@gitlab.digiteka.com:group/sub/project
 ```
 
-Keep it alive with a `systemd --user` service.
+Deux choses à mettre dans `.env` avant cette commande, sinon elle échoue en nommant celle qui
+manque :
 
-3. Copy `workflow/review.yml` into `.github/workflows/` **on the default branch**. GitHub reads
-   `issue_comment` workflows from there only, so a copy on a feature branch never fires.
-4. Set repository variables `HERMES_PROVIDER` and `HERMES_MODEL`. There is no secret to create,
-   the workflow uses the token GitHub gives it.
-
-## Settings worth changing
-
-`review.config.yml`, the only file the user edits:
-
-| Key | Effect |
+| Variable | Pourquoi |
 | --- | --- |
-| `model` | `claude-opus-5[1M]` reads deeply, `claude-sonnet-5` is about 4x faster |
-| `agents` | remove one and it stops looking for that class of problem |
-| `paths.blocking` | a must-fix under these paths turns the check red |
-| `skeptics` | raise to 3 and a finding survives only on a majority |
-| `max_findings` | hard cap on what gets posted |
+| `WEBHOOK_MULTI_SECRET_GITLAB` | une pour toutes les instances GitLab, jamais celle de GitHub : GitLab envoie le secret lui-même dans un en-tête sur chaque livraison |
+| `GITLAB_TOKEN__GITLAB_COM`, `GITLAB_TOKEN__GITLAB_DIGITEKA_COM` | un PAT par instance, scope `api`. Le nom est l'hôte en majuscules, points et tirets en underscores |
+
+Dites deux choses à l'utilisateur là-dessus. Commenter `/review` a besoin de **Developer ou
+plus** sur le projet — le receveur vérifie via l'API et refuse tout ce qu'il ne peut pas
+confirmer, ce qui inclut un Guest ou un inconnu. Et une revue GitLab revient comme **une seule
+note de merge request**, tableau récapitulatif puis une ligne par finding, pas un commentaire
+par ligne ; les discussions ancrées sur une ligne ne sont pas encore implémentées.
+
+## Réglages qui valent le coup d'être changés
+
+`review.config.yml`, le seul fichier que l'utilisateur édite :
+
+| Clé | Effet |
+| --- | --- |
+| `model` | `claude-opus-5[1M]` lit en profondeur, `claude-sonnet-5` est environ 4x plus rapide |
+| `agents` | en retirer un, il arrête de chercher cette classe de problème |
+| `paths.blocking` | un must-fix sous ces chemins fait passer le check au rouge |
+| `skeptics` | monter à 3, et un finding ne survit que sur une majorité |
+| `max_findings` | plafond dur sur ce qui est publié |

@@ -1,0 +1,52 @@
+# hermes-pr-review -- step 2 of 3: the cloudflared tunnel
+#
+# TEMPLATE. ops/install-systemd.sh renders it into ~/.config/systemd/user/ with the
+# placeholders below filled in. Edit this file, not the rendered copy, then re-install.
+#
+#   checkout   @PR_REVIEW_ROOT@
+#   PATH       @PR_REVIEW_PATH@
+#   rendered   @RENDERED_AT@
+#
+# ops/tunnel-run.sh execs cloudflared, so the process under this unit is cloudflared itself:
+# Restart=always restarts the real thing, MAINPID is the real pid, and `systemctl status`
+# tells the truth. src/provisioning-webhook/tunnel-lifecycle.mjs is untouched and still
+# works by hand -- but do not use it to start a second tunnel while this unit is running,
+# and use `systemctl --user stop hermes-tunnel` rather than its `stop`, which would kill
+# cloudflared only for systemd to bring it straight back.
+
+[Unit]
+Description=hermes-pr-review cloudflared quick tunnel to the multi-repo receiver
+Documentation=file://@PR_REVIEW_ROOT@/ops/README.md
+Requires=hermes-preflight.service
+After=hermes-preflight.service
+PartOf=hermes-webhook.target
+# Never give up. An EC2 instance nobody is watching is better off retrying every 10s
+# forever than sitting in 'failed' because Cloudflare had a bad five minutes at 4am.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=@PR_REVIEW_ROOT@
+Environment=PR_REVIEW_ROOT=@PR_REVIEW_ROOT@
+Environment=PATH=@PR_REVIEW_PATH@
+EnvironmentFile=-@PR_REVIEW_ROOT@/ops/systemd.env
+ExecStart=@PR_REVIEW_ROOT@/ops/tunnel-run.sh
+
+# Waits for the quick-tunnel hostname and publishes it in .tunnel.json. If it fails the
+# unit fails, cloudflared is killed and Restart=always tries again -- which is right: a
+# tunnel whose address nobody knows is worse than no tunnel.
+ExecStartPost=@PR_REVIEW_ROOT@/ops/tunnel-ready.sh $MAINPID
+
+# Then re-point every webhook at the address we just learned. Cloudflare issues a new
+# hostname on every start, so this has to happen on every start, including the automatic
+# restarts -- and ExecStartPost is the only hook systemd runs on those. An ordinary
+# Wants=/After= dependency would fire once at boot and never again.
+#
+# '-' so a GitHub hiccup does not take the tunnel down with it (the sync unit retries on its
+# own). '--no-block' is mandatory: without it this waits for a job that is itself waiting for
+# this unit to finish starting, and the two deadlock until TimeoutStartSec.
+ExecStartPost=-@SYSTEMCTL@ --user --no-block restart hermes-webhook-sync.service
+
+Restart=always
+RestartSec=10
+TimeoutStartSec=120

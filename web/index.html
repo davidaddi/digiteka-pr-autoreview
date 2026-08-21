@@ -23,11 +23,15 @@
       .muted { opacity: .55; }
       pre { margin: .4rem 0 0; padding: .5rem .6rem; background: #8881; border-radius: .3rem; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9rem; overflow: auto; }
       .error { color: #ef4444; min-height: 1.4rem; }
+      .tunnel { margin: -1.5rem 0 1.5rem; font-size: .85rem; }
+      .tunnel code { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
     <h1>hermes-pr-review</h1>
-    <p class="lead">Repositories served by this machine. One self-hosted runner per repository, one shared checkout.</p>
+    <p class="lead">Repositories served by this machine. One webhook per repository, one receiver, no runner.</p>
+
+    <p id="tunnel" class="tunnel"></p>
 
     <form id="add">
       <input id="slug" placeholder="owner/name" autocomplete="off" spellcheck="false" required />
@@ -37,7 +41,7 @@
 
     <table>
       <thead>
-        <tr><th>Repository</th><th>State</th><th>Runner</th><th>Last sync</th><th></th></tr>
+        <tr><th>Repository</th><th>State</th><th>Webhook</th><th>Last sync</th><th></th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -47,8 +51,14 @@
       const error = document.getElementById('error')
       const form = document.getElementById('add')
       const slug = document.getElementById('slug')
+      const tunnel = document.getElementById('tunnel')
 
-      const RUNNER = { up: ['up', 'up'], down: ['down', 'down'] }
+      const HOOK = {
+        up: ['up', 'delivering'],
+        stale: ['work', 'stale url'],
+        unknown: ['off', 'no tunnel'],
+        none: ['down', 'none'],
+      }
       const JOB = { queued: ['work', 'queued'], running: ['work', 'running'], ok: ['up', 'done'], error: ['down', 'failed'] }
 
       function dot(kind, label) {
@@ -70,6 +80,16 @@
         return data
       }
 
+      // A quick tunnel publishes a new hostname every time it starts, and every webhook keeps
+      // posting to the old one until a sync re-points it. Say so at the top of the page.
+      function renderTunnel(info) {
+        if (!info || info.state !== 'up') {
+          tunnel.innerHTML = dot('down', 'No tunnel. Start one, then re-sync every repository.')
+          return
+        }
+        tunnel.innerHTML = dot('up', `Receiver reachable at <code>${esc(info.url)}</code>`)
+      }
+
       function render(list) {
         if (!list.length) {
           rows.innerHTML = '<tr><td colspan="5" class="muted">Nothing registered yet.</td></tr>'
@@ -79,7 +99,8 @@
         rows.innerHTML = list
           .map((repo) => {
             const name = `${repo.owner}/${repo.name}`
-            const runner = repo.status === 'removed' ? ['off', 'n/a'] : (RUNNER[repo.runner] ?? RUNNER.down)
+            const hook = repo.status === 'removed' ? ['off', 'n/a'] : (HOOK[repo.webhook] ?? HOOK.none)
+            const id = repo.hook && repo.status !== 'removed' ? ` <span class="muted">#${esc(repo.hook)}</span>` : ''
             const job = repo.job ? JOB[repo.job.state] ?? ['off', repo.job.state] : null
             const busy = repo.job && (repo.job.state === 'queued' || repo.job.state === 'running')
             const log = repo.job?.output ? `<pre>${esc(repo.job.output)}</pre>` : ''
@@ -87,7 +108,7 @@
             return `<tr>
               <td class="repo">${esc(name)}</td>
               <td class="${repo.status === 'removed' ? 'muted' : ''}">${esc(repo.status)}</td>
-              <td>${dot(runner[0], runner[1])}</td>
+              <td>${dot(hook[0], hook[1])}${id}</td>
               <td>${job ? dot(job[0], `${esc(repo.job.command)} ${job[1]}`) : '<span class="muted">—</span>'}${log}</td>
               <td><button data-owner="${esc(repo.owner)}" data-name="${esc(repo.name)}" ${busy ? 'disabled' : ''}>${
                 repo.status === 'removed' ? 'Retry removal' : 'Remove'
@@ -103,7 +124,9 @@
 
       async function refresh() {
         try {
-          render((await call('GET', '/api/repos')).repos)
+          const data = await call('GET', '/api/repos')
+          renderTunnel(data.tunnel)
+          render(data.repos)
         } catch (problem) {
           fail(problem.message)
         }
@@ -127,7 +150,7 @@
         const button = event.target.closest('button')
         if (!button) return
         const { owner, name } = button.dataset
-        if (!confirm(`Remove ${owner}/${name}? The workflow file and the runner both go away.`)) return
+        if (!confirm(`Remove ${owner}/${name}? Its webhook is deleted on GitHub.`)) return
         fail('')
         try {
           await call('DELETE', `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)

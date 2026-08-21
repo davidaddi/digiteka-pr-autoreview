@@ -4,18 +4,23 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT, find, parseSlug } from '../src/provisioning/registry.mjs'
-import { list } from '../src/provisioning/sync-repos.mjs'
+import { list } from '../src/provisioning-webhook/sync-repos.mjs'
+import { state as tunnelState, status as tunnelStatus } from '../src/provisioning-webhook/tunnel-lifecycle.mjs'
 
-// This process reaches a personal access token that can commit workflows and register
-// runners on every repository you own. There is no authentication on these routes: the
-// only thing standing between the internet and that token is the loopback bind below.
-// Never move it to 0.0.0.0, never put it behind a tunnel. If you ever need remote access,
-// put a real authenticating proxy in front and add a check here too. The Host and Origin
-// guards below keep a browser on another site from driving it through DNS rebinding.
+// Webhook mode console (branch webhook-mode). Same routes as the runner-mode one on main,
+// but adding a repository hangs a webhook on it instead of committing a workflow and
+// starting a self-hosted runner.
+//
+// This process reaches a personal access token that can create webhooks on every repository
+// you own. There is no authentication on these routes: the only thing standing between the
+// internet and that token is the loopback bind below. Never move it to 0.0.0.0, never put it
+// behind a tunnel — the tunnel in this mode is for the receiver, on another port, and it must
+// stay that way. The Host and Origin guards below keep a browser on another site from driving
+// this through DNS rebinding.
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.WEB_PORT ?? 8788)
 const PAGE = join(ROOT, 'web', 'index.html')
-const SYNC = join(ROOT, 'src', 'provisioning', 'sync-repos.mjs')
+const SYNC = join(ROOT, 'src', 'provisioning-webhook', 'sync-repos.mjs')
 const MAX_BODY = 4096
 
 const jobs = new Map()
@@ -106,9 +111,17 @@ function repos() {
   for (const [key, job] of jobs) {
     if (known.has(key)) continue
     const [owner, name] = key.split('/')
-    rows.push({ owner, name, status: 'pending', runner: 'down', job: view(job) })
+    rows.push({ owner, name, status: 'pending', webhook: 'none', hook: null, url: null, job: view(job) })
   }
   return rows
+}
+
+// Every hook points at this url. When the quick tunnel restarts it publishes a different
+// hostname, every hook goes stale at once and the page has to say so: nothing else on it
+// would look wrong, and no /review would ever arrive again.
+function tunnel() {
+  const current = tunnelState()
+  return { state: tunnelStatus(), url: tunnelStatus() === 'up' ? (current?.url ?? null) : null }
 }
 
 function busy(target) {
@@ -131,7 +144,9 @@ async function handle(req, res) {
     return
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/repos') return send(res, 200, { repos: repos() })
+  if (req.method === 'GET' && url.pathname === '/api/repos') {
+    return send(res, 200, { repos: repos(), tunnel: tunnel() })
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/repos') {
     if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) {
@@ -187,4 +202,8 @@ const server = createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`hermes-pr-review console on http://${HOST}:${PORT} (loopback only)`)
   if (!process.env.GITHUB_TOKEN) console.error('warning: GITHUB_TOKEN is not set, every sync will fail')
+  if (!process.env.WEBHOOK_MULTI_SECRET) console.error('warning: WEBHOOK_MULTI_SECRET is not set, every sync will fail')
+  if (tunnel().state !== 'up' && !process.env.WEBHOOK_PUBLIC_URL) {
+    console.error('warning: no tunnel is up, start one with src/provisioning-webhook/tunnel-lifecycle.mjs start')
+  }
 })

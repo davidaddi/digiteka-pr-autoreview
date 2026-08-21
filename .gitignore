@@ -1,11 +1,40 @@
 .env
 .runtime.env
-.pr.diff
-.findings.json
-.run.json
+.runtime.*.env
 .work/
 node_modules/
-.run.meta
 repos.yml.tmp
 runners/*
 !runners/.gitkeep
+
+# per-run artifacts: diff, findings, stream-json log, meta -- one review's output, not our code
+runs/*
+!runs/.gitkeep
+
+# webhook mode: hook ids and tunnel state belong to this machine, not to the repository
+webhooks.json
+webhooks.json.tmp
+.tunnel.json
+.tunnel.json.tmp
+.tunnel.log
+
+# setup.sh's own background receiver, started by hand with nohup (no systemd for now)
+.receiver.log
+.receiver.pid
+
+# systemd mode (ops/): per-instance overrides and the webhook refresh lock. systemd.env is
+# where an EC2 instance puts what differs from .env, so it can hold secrets: never commit it.
+ops/systemd.env
+.webhook-sync.lock
+
+# hermes creates its own workspace in whatever directory it is spawned from (dispatch.mjs
+# sets cwd to the repo root). Not our code, not our data, recreated on every run.
+SOUL.md
+/audio_cache/
+/cron/
+/hooks/
+/image_cache/
+/memories/
+/pairing/
+/sessions/
+/skills/

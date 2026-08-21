@@ -1,7 +1,11 @@
 # Repositories served by the local multi-repo mode.
-# One line per repository: owner/name:status
+# One line per repository: [provider@host:]path:status
+#   owner/name:active                            a github.com repository, the default
+#   gitlab@gitlab.com:group/project:active       a gitlab.com project
+#   gitlab@gitlab.example.com:g/sub/proj:active  a project on a self-hosted GitLab
 # status is pending (to provision), active (provisioned, runner started) or removed (to tear down).
 # src/provisioning/sync-repos.mjs owns this file. The web UI never writes it directly.
 
 repos:
   - davidaddi/digiteka-pr-autoreview:active
+  - gitlab@gitlab.digiteka.com:digiteka-dev/tizr/tizr_scrapersv2:active

@@ -1,0 +1,139 @@
+@startuml classes
+
+package "Registre & Provisioning (mode webhook multi-repo)" {
+  class RepoRegistry <<repos.yml>> {
+    +read(): RepoEntry[]
+    +write(entries)
+    +upsert(entry)
+    +find(target): RepoEntry
+    +key(entry): "provider@host:owner/name"
+    +label(entry): string
+    +parseTarget(text): {owner, name, provider, host}
+  }
+
+  class RepoEntry {
+    +owner: string
+    +name: string
+    +provider: "github"|"gitlab"
+    +host: string
+    +status: enum {pending, active, removed}
+  }
+
+  class HooksStore <<webhooks.json>> {
+    +get(key): {hookId, url}
+    +set(key, record)
+    +remove(key)
+  }
+
+  class SyncRepos <<sync-repos.mjs>> {
+    +add(target)
+    +markRemoved(target)
+    +sync(target?)
+    +list(): entry[]
+    -provision(entry)
+    -teardown(entry)
+    -publicUrl(): string
+  }
+
+  class GitHubWebhook <<github-webhook.mjs>> {
+    +createWebhook(repo, url, secret)
+    +updateWebhook(repo, id, url, secret)
+    +deleteWebhook(repo, id)
+    +listWebhooks(repo)
+    +getWebhook(repo, id)
+  }
+
+  class GitLabWebhook <<gitlab-webhook.mjs>> {
+    +tokenVar(host): "GITLAB_TOKEN__<HOST>"
+    +token(host): string
+    +createWebhook(host, repo, url, secret)
+    +updateWebhook(host, repo, id, url, secret)
+    +deleteWebhook(host, repo, id)
+    +listWebhooks(host, repo)
+    +getWebhook(host, repo, id)
+  }
+
+  class TunnelLifecycle <<tunnel-lifecycle.mjs>> {
+    +start(port): url
+    +stop()
+    +url(): string
+  }
+
+  class WebServer <<web/server.mjs>> {
+    +GET /       : liste repos + statut
+    +POST /repos : add
+    +DELETE /repos/:id : remove
+  }
+}
+
+package "Réception & Dispatch" {
+  class Receiver <<receiver.mjs>> {
+    +POST /  : delivery GitHub/GitLab
+    +GET /healthz
+    -signatureMatches(header, body): bool
+    -tokenMatches(header): bool
+    -githubEvent(payload) / gitlabEvent(payload)
+    -githubPermits(payload) / gitlabPermits(event): bool
+    -enqueue(event, task)
+    -dispatch(event)
+  }
+
+  class Dispatcher <<dispatch.mjs>> {
+    +runHermes(repo, pr, action, argument, root, provider, host)
+    -runtimeEnvFile(root, repo, pr)
+    -publishMarker(root, repo, pr)
+  }
+
+  class Hermes <<CLI externe>> {
+    +run(prompt, session)
+  }
+}
+
+package "Revue" {
+  class ReviewScript <<review.sh>> {
+    +review(pr)
+    +fix(pr)
+    +revert(pr)
+    -checkout_pr(pr): workdir
+  }
+
+  class Orchestrator
+  class Finder <<correctness|security|silent-failure>>
+  class Skeptic
+  class Judge
+
+  class GitHubPublisher <<github.mjs>> {
+    +post(pr)
+    +say(pr, message)
+    +fail(pr, reason)
+  }
+
+  class GitLabPublisher <<gitlab.mjs>> {
+    +post(pr)
+    +say(pr, message)
+    +fail(pr, reason)
+  }
+}
+
+RepoRegistry "1" o-- "*" RepoEntry
+SyncRepos --> RepoRegistry : lit/écrit
+SyncRepos --> HooksStore : id de hook
+SyncRepos --> GitHubWebhook : provisionne (github)
+SyncRepos --> GitLabWebhook : provisionne (gitlab)
+SyncRepos --> TunnelLifecycle : url publique
+WebServer --> SyncRepos : appelle
+
+Receiver --> RepoRegistry : repos actifs
+Receiver --> GitLabWebhook : token(host)
+Receiver --> Dispatcher : dispatch(event)
+Dispatcher ..> Hermes : spawn (-z prompt --yolo)
+Hermes --> ReviewScript : "1. bash review.sh <pr> <action>"
+Hermes --> GitHubPublisher : "2. node github.mjs post/say <pr>"
+Hermes --> GitLabPublisher : "2. node gitlab.mjs post/say <pr>"
+
+ReviewScript --> Orchestrator
+Orchestrator --> Finder : fan-out
+Orchestrator --> Skeptic : chaque finding
+Orchestrator --> Judge : dédup + rank
+
+@enduml

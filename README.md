@@ -1,193 +1,191 @@
 # hermes-pr-review
 
-AI code review on your pull requests. Runs on your machine. No SaaS.
+Revue de code par IA sur vos pull requests. Vous commentez `/review`. Ça répond sur les lignes exactes.
 
-You comment `/review`. It answers on the exact lines.
+1. [Comment ça fonctionne](#1-comment-ça-fonctionne)
+2. [Installation](#2-installation)
 
-## Try it
+## 1. Comment ça fonctionne
 
-```bash
-gh repo create my-sandbox --template iFeyz/hermes-pr-review --public --clone
-cd my-sandbox
-./setup.sh
-```
+### Les trois commandes
 
-Then comment `/review` on the pull request it opened.
-
-That pull request has **3 real bugs planted in it**. See how many come back.
-
-**Using an AI to set this up?** Point it at [AGENTS.md](AGENTS.md). It has the exact steps, the
-failures you will hit, and what not to do.
-
-## The three commands
-
-| You type | It does |
+| Vous tapez | Ça fait |
 | --- | --- |
-| `/review` | reads the diff, runs your tests, comments on the lines |
-| `/fix` | writes the smallest fix, tests it, pushes it |
-| `/revert` | undoes that commit |
+| `/review` | lit le diff, lance vos tests, commente sur les lignes |
+| `/fix` | écrit le plus petit correctif possible, le teste, le pousse |
+| `/revert` | annule ce commit |
 
-You get a 👀 within a second, so you know it was seen.
+Vous avez un 👀 en moins d'une seconde, pour savoir que c'est vu.
 
-## How it works
+### Architecture
 
-![sequence](https://www.plantuml.com/plantuml/png/ZLRBSjis5DtZAr1gaOtrZcHBez74rYDUPDfCqbtTwK3a9GcR15WyvAQP_4kMqNVentf1WWfbKpDTYSGvk8zp7-8xRPWoDi_8BoQ576YHCIw8VkAYO8hbTCV2fqH9AwALpAIYdS5wE1nUDnWHnCncPYk5-PMXXNl8zc1uoDevd_c_G8UJ1gXJ5ibdBX8Qiqn34u6_BOWGw5T2wQrIyja7CRcvdMwtzQ4pwu7LR3rSpn3um6Fum0NSIHM1ykXuC9wErqtqPNR3wV1kD4B6HvI5XxnWmlm_KgkV1g4Hv6QwMM_7h-5Q6amhD59Tzbl1JO-ZpUtWxRY6sdozHql5AvEZuMWwMfzW6Nsvkr3m4wKjpnAwwFKU6DvfWzTypn6wd6bDQFNgmORXw_NDP3OWtnez9AIf-kUoatRhhyrMPrMLnkY466uoe0kD9_FHQBa87Ntkqrj-Whq56hsn0iVAPXbLhfsrkQAHfQ7CSn26SGMKkLUb83GyNlHB8yj5trbTFWX2c2if3TR7mnuoMHHWLK2Png7Qa-9d1z7WFJVtTbTYINeEOLjmAVI3K5O8gEvNZ-UyUr0vw19EoyTpMC6UmtDFfoL3XueNvfonofYDWAva12KdBD_FEGatgTtryiVAKI6rmJW8iqOAc-y0artibdyC1dy6X62MjBl4XEYy5Wre4FIhK8A0889ubGnoKANZ3m6EXpIkjOM__3qaUrfjC0W-_lRvTzhhzT0UgpH2LjapYYUfeJAkJVj-cLCMXbOV3wW_pR1cLi63045poONsvTOGIe5fD_nLSfO-8wuBPiBKAK37RsVqb8iBOS_GkMTtXjlfTdD7Y7z7EvNefPqTqodLAkoVodB1ch_J6OrlfkCf8VxzfmhuKoWQyJXs5fnEW7c9wiGA7lFZuOKgjSrQ5NKyXBOu7l2Nfb9fr-IvZ8u_ChXw48yiPrnJ_7FHJhhZTvgzOGdMf1bCrIjbGFwnMz1kj-HHgS8KXqSn78PcRfxPkPbDhZSJGjo85tI5WY7VAdr5iJPk5MIPYmM7kBRTSEZ7Ju3MxGGig5NSVBc0yWn3xCQCPzWD14H4sbXFKE0GN3cfOkj2Jnak15fmxF-s2uysIW2tnV4GIRlB9BOI1UDmhLrlLJKAWfYB2Fy-TUzHIu7QHF12dHCN_k663fe4FyED1gl6iMgBqw2MfxutJdSzixCUpMQuIFthYzdgkzMd-tZLjwaRi0jK_1WnLeFkVyLlWc_dcTHRed7aDvJV06vHpC_sAXO-uub02RLD4cmU7EyhL1t29qBUOPNSTyz_)
+![diagramme de classes](docs/uml/class_diagram.png)
 
-Two brains:
+Trois zones : `Registre & Provisioning` enregistre les repos et crée les webhooks,
+`Receiver & Dispatch` reçoit une livraison et lance `hermes`, `Revue` fait le travail de
+lecture. Source PlantUML dans [`docs/uml/scripts/`](docs/uml/scripts/) si vous voulez la
+modifier (`class.puml`, `sequence.puml`).
 
-- **Hermes** dispatches and publishes. Never reads code.
-- **Claude Code** does the work. Reads the diff, opens files, runs tests.
+### Deux cerveaux
 
-Separate accounts, so neither eats the other's quota.
+![séquence, exécution d'un /review](docs/uml/step2.png)
 
-## Why it does not spam you
+- **Hermes** distribue et publie. Ne lit jamais le code.
+- **Claude Code** fait le travail. Lit le diff, ouvre les fichiers, lance les tests.
 
-![pipeline](https://www.plantuml.com/plantuml/png/fLNDRXCn4BxlKmpYq5OKsYHjMf9IMff42264L10N9EHwPpT3l7RgdvIVyYuSoOKNuBWlnjX9O4LJE71RpOpd-nbxziHvONseL7R7Zx52c2f1EdCJqbDXHGKNGavAQuBEpumo5kxk3bgjra6Z8iT21EL7HliNWZiyHJL3JrAihpcdJmYj_KRIZKLkhaYNK0Zbi94vjTPSBN4F1eVx3tV_JCQE_onOG7OQAI4zpSX_XCyPm9C_9RQwhIVjTimOcwDTHZkxdMvdmD46vh0x78mw71kGg8pERxHgjzhTzg1HiBRZChckyNcSpwhPy7HtBmQ7l_gF3lTRUm-JY5NN_SFJxcYKVMawV4ML4XfVaLTu6yTRoc-I-alXmkc3DINhXD-iUaEv7qFdi3b6RJp-xvoMTsCHMrs7Brdc8t4uSXpfjTl7HpAMzvP2Zv_pSw0fAjB8DnWipW9knoybEE6ObWWWJLMXze8i7ksayyT7Ex7XyLkTPTTdOxHoZC6wwoozjQmmTi9CUj9OYz9hTAwVWY3A-FOuvL06ozVpHfmKGzql1AbWiP-XpY6rwoKw3gJGEUM2F_kCVIvnwkaou7NMCs5coGAhbIPggUUe-XaLi1bO7NUD4SvfQUjlFadCwxbaF6OFZxU0ruE6JMtqLcJo7ZtQFd-bwLWgnxun3xxHGhi8bflWsJDIm2SyFaZ9rup8-y0vDb2XzH6t_k7ZyWakLJ2cXSkm4JIOSA4edejY8zhYCqDU5R1f0YK-BbomkzeJgzW6CKCP5SYngBypsAoUMofYBdb61PlpB9JH5nQPHmYZTHJKS_KyLVjw3YeWkC2cRL0rvPK1mPCYn_O6k_2EULQaWOzV1aR_xTEA5sVa9AwsH-1jYF29zif6zjlnNXIUYXMp7c_W8h61-YjKuiExWZYXopJIbz4DoVL6NoS6h59HoHfbfCoJT1xobVbK5BUCRdjvYlICPv-CMMThutA3Y5TZ3lVOah9a6ARmYpFx82V0RxDanmXMghTXnkFbY8wrpfjfbftmaVY_-Ga0)
+Comptes séparés, pour qu'aucun des deux ne dévore le quota de l'autre. `receiver.mjs` reçoit
+le commentaire, `dispatch.mjs` lance `hermes`, qui orchestre `review.sh` puis publie — même
+receveur, même pipeline, que le commentaire vienne de GitHub ou de GitLab.
 
-- **3 finders** raise anything suspicious
-- **1 skeptic** opens the real code and tries to kill each one. When unsure, it kills.
-- **1 judge** dedups, ranks, caps
+- **3 chercheurs** signalent tout ce qui paraît suspect
+- **1 sceptique** ouvre le vrai code et essaie de démonter chaque piste. Dans le doute, il jette.
+- **1 juge** dédoublonne, classe, plafonne
 
-Severity is read off one sentence: what a user sees when it breaks. Not off how loudly it fails.
+La sévérité se lit sur une phrase : ce qu'un utilisateur voit quand ça casse. Pas sur le bruit
+que fait l'échec.
 
-Target is **1 or 2 findings** on a normal pull request.
+L'objectif est **1 ou 2 findings** sur une pull request normale.
 
-## Settings
+### Réglages
 
-One file, `review.config.yml`:
+Un seul fichier, `review.config.yml` :
 
-| Key | What it changes |
+| Clé | Ce que ça change |
 | --- | --- |
-| `model` | `claude-opus-5[1M]` reads deeply. `claude-sonnet-5` is 4x faster. |
-| `agents` | remove one, it stops looking for that |
-| `paths.blocking` | a must-fix here turns the check red |
-| `skeptics` | set to 3 and a finding needs a majority to survive |
-| `max_findings` | hard cap |
+| `model` | `claude-opus-5[1M]` lit en profondeur. `claude-sonnet-5` est 4x plus rapide. |
+| `agents` | en retirer un, il arrête de chercher ce type de problème |
+| `paths.blocking` | un must-fix ici fait passer le check au rouge |
+| `skeptics` | mettre 3, et un finding a besoin d'une majorité pour survivre |
+| `max_findings` | plafond dur |
 
-## What it costs
+### Ce que ça coûte
 
 | | |
 | --- | --- |
-| Time | 15 min on 350 lines. It reads, it does not skim. |
-| Orchestration | a few cents per review |
-| The rest | your existing Claude plan |
+| Orchestration | quelques centimes par revue |
+| Le reste | votre abonnement Claude existant |
 
-## What you need
+Aucune clé API nulle part. Les deux côtés tournent sur des logins par abonnement.
+
+## 2. Installation
+
+### Ce qu'il faut
 
 `node` · `gh` · `cloudflared` · `hermes` · `claude`
 
-`setup.sh` tells you which are missing and prints the install command.
+`setup.sh` et `setup-demo.sh` disent tous les deux ce qui manque et affichent la commande
+d'installation.
 
-No API key anywhere. Both sides run on subscription logins.
 
-## On your own repo
+`setup-demo.sh` est ponctuel : mêmes vérifications que `setup.sh` ci-dessous, mais un tunnel
+éphémère, démonté au Ctrl-C. Rien n'est laissé derrière. Bon pour un premier coup d'œil, pas
+pour quelque chose que vous voulez voir tourner demain.
+
+### Sur une instance EC2, pour de vrai : `./setup.sh`
+
+C'est le mode à lancer sur une instance EC2 vierge pour qu'elle finisse par servir tous les
+repos que vous lui donnez — GitHub et GitLab, tous les deux — sans jamais rouvrir de terminal.
+
+Dans l'ordre, il :
+
+1. **Vérifie les binaires** (`node`, `gh`, `cloudflared`, `hermes`, `claude`) et affiche la
+   commande d'installation pour celui qui manque.
+2. **Complète `.env`** s'il n'existe pas déjà : demande `GITHUB_TOKEN` interactivement (jamais
+   affiché, jamais journalisé), génère `WEBHOOK_MULTI_SECRET` et `WEBHOOK_MULTI_SECRET_GITLAB`,
+   met `WEBHOOK_PORT` par défaut.
+3. **Vérifie que `hermes` et `claude` sont connectés.** Il vous guide vers la commande de login,
+   il ne la lance jamais lui-même — ça reste toujours interactif, une fois, à la main.
+4. **Démarre un tunnel `cloudflared` de démarrage**, juste le temps d'enregistrer le premier
+   webhook.
+5. **Enregistre `REPO=owner/name`** (ou re-pointe tous les webhooks déjà dans `repos.yml` vers
+   le tunnel courant, si vous en avez déjà d'enregistrés).
+6. **Passe la main à `systemd --user`** : arrête le tunnel de démarrage, génère les unités dans
+   `ops/`, active le lingering (pour qu'elles démarrent au boot sans personne connecté), et
+   démarre `hermes-webhook.target` — la chaîne `preflight → tunnel → webhook-sync → receiver`.
+   À partir de là, ça survit à un reboot sans jamais rouvrir de terminal.
+
+Relancer `./setup.sh` est toujours sûr : chaque étape vérifie d'abord son propre état (token
+déjà sauvé, tunnel déjà monté, repo déjà enregistré, unités déjà installées) et ne fait rien
+plutôt que de dupliquer.
+
+![séquence, enregistrement d'un repo](docs/uml/step1.png)
+
+---
+
+Les repos GitHub et les projets GitLab partagent un seul processus, un seul port, un seul
+tunnel et un seul `repos.yml`. La ligne dit lequel :
+
+```
+davidaddi/demo:active                                github.com, l'orthographe par défaut
+gitlab@gitlab.com:group/project:active               gitlab.com
+gitlab@gitlab.digiteka.com:group/sub/project:active  une instance auto-hébergée, sous-groupes compris
+```
+
+Enregistrer un projet GitLab ne fait pas partie de `./setup.sh` — faites-le directement, une
+fois que `.env` a les deux choses ci-dessous :
 
 ```bash
-REPO=you/your-project SKIP_DEMO=1 ./setup.sh
+node src/provisioning-webhook/sync-repos.mjs add gitlab@gitlab.digiteka.com:group/sub/project
 ```
 
-The webhook is removed when you stop the script. Nothing is left behind.
+Deux choses de plus dans `.env`, à la main (`setup.sh` ne génère que le secret partagé, jamais
+un token personnel) :
 
-## Make the bot post, not you
+- `WEBHOOK_MULTI_SECRET_GITLAB` — déjà généré par `setup.sh`. Un secret partagé pour toutes les
+  instances GitLab, volontairement pas le même que celui de GitHub : GitLab ne signe pas le
+  corps, il met le secret lui-même dans un en-tête `X-Gitlab-Token` sur chaque livraison, et
+  celui de GitHub n'est censé jamais quitter cette machine.
+- `GITLAB_TOKEN__<HOST>` — un token d'accès personnel par instance, scope `api`, l'hôte en
+  majuscules avec les points et tirets remplacés par des underscores :
+  `GITLAB_TOKEN__GITLAB_COM`, `GITLAB_TOKEN__GITLAB_DIGITEKA_COM`. Deux instances, ce sont deux
+  comptes, donc un seul token ne peut pas suffire.
 
-GitHub will not let you request changes on your own pull request. So in the mode above, reviews land as plain comments.
+Le hook créé s'abonne seulement aux évènements de note. Le payload de GitLab ne dit pas ce que
+le commentateur a le droit de faire sur le projet, donc le receveur interroge l'API avant de
+distribuer et exige Developer (niveau d'accès 30) ou plus, appartenances de groupe héritées
+comprises ; tout ce qu'il ne peut pas confirmer est un non. Sur GitHub cette réponse se lit
+directement dans le payload.
 
-Want `github-actions[bot]` to post instead:
+Une différence dans ce qui revient : sur GitLab la revue est une seule note de merge request —
+le même tableau récapitulatif, puis une ligne par finding — plutôt qu'un commentaire par ligne.
+Le 👀, le statut de commit `hermes-review`, `/fix` et `/revert` fonctionnent pareil sur les deux.
 
-1. Clone this repo on the machine that will run it. hermes and claude logged in there.
-2. Register a runner on your repo with the label `hermes-review`.
-3. Copy `workflow/review.yml` into `.github/workflows/`, on the **default branch**.
-4. Set repo variables `HERMES_PROVIDER` and `HERMES_MODEL`.
+### Vérifier que tout marche bien
 
-Costs a self-hosted runner. Gets you change requests and a bot identity.
+`./setup.sh` ajoute trois alias à `~/.bashrc` (idempotent — le relancer ne les duplique jamais) :
 
-## Many repositories, one machine
-
-The mode above, done once per repository, from a page on `localhost`.
-
-The trick is that nothing is duplicated. `review.sh` clones each target repository on demand
-into `.work/`, so **one checkout of this repository serves them all**. What is per repository is
-the runner process, because a self-hosted runner registers against a single repository.
-
-```
-repos.yml ──▶ sync-repos.mjs ──▶ HERMES_PROVIDER / HERMES_MODEL set as repo variables
-                              ├─▶ runners/<owner>-<name>/run.sh, label hermes-review
-                              └─▶ workflow committed on the default branch, last
-```
-
-Every runner carries the same `hermes-review` label and every job `cd`s into this same checkout.
-
-### The token
-
-One classic PAT, scopes **`repo` and `workflow`**. `workflow` is not optional: GitHub refuses
-any write to `.github/workflows/` from a token without it. You must also be **admin** on each
-repository, that is what mints a runner registration token.
-
-Fine-grained equivalent: Contents, Workflows, Variables and Administration, all read/write.
+| Alias | Lance | Dit |
+| --- | --- | --- |
+| `lr` | `sync-repos.mjs list` | chaque repo enregistré et si son webhook est `up` ou `stale` |
+| `herstat` | `systemctl --user list-units 'hermes-*' --all` | lesquelles des quatre unités systemd sont `active` |
+| `vpr` | `review-status.mjs` | quels `/review`/`/fix`/`/revert` tournent en ce moment, sont en attente, ou viennent d'échouer |
 
 ```bash
-cp .env.example .env
-$EDITOR .env      # GITHUB_TOKEN, and HERMES_PROVIDER / HERMES_MODEL if you use them
+lr                                              # statut du webhook par repo
+herstat                                         # hermes-preflight/tunnel/webhook-sync/receiver
+vpr                                             # ce qui tourne / attend / a échoué, maintenant
+curl -s 127.0.0.1:$WEBHOOK_PORT/healthz         # "ok, N repositories" directement depuis le receveur
+journalctl --user -u hermes-receiver -f         # regarder une livraison arriver, en direct
+systemctl --user status hermes-receiver         # actif depuis quand, nombre de redémarrages
 ```
 
-`.env` is gitignored. The token is never logged, never passed to a review job, and never
-written into a runner directory.
-
-### Start it
+La colonne `webhook` de `lr` est celle à qui se fier après un reboot ou un redémarrage du
+tunnel : le tunnel éphémère change de nom d'hôte à chaque démarrage, et `stale` veut dire un
+repo dont le hook pointe encore vers le nom d'hôte d'hier. `hermes-webhook-sync.service`
+corrige normalement ça tout seul, en quelques secondes après le redémarrage du tunnel ; s'il
+reste `stale`, `herstat` montrera cette unité pas `active`, et `journalctl --user -u
+hermes-webhook-sync` dira pourquoi.
 
 ```bash
-node web/server.mjs      # http://127.0.0.1:8788
+node src/provisioning-webhook/sync-repos.mjs sync    # re-pointer tous les webhooks à la main
+systemctl --user disable --now hermes-webhook.target # tout arrêter
 ```
 
-Start it from a shell where `node`, `gh`, `hermes` and `claude` are on `PATH`, with `hermes` and
-`claude` logged in. A runner keeps the `PATH` it was registered with and hands it to every job.
 
-Type `owner/name`, press **Add repository**. The row goes amber while it works, green when the
-runner says it is listening. The first one is the slow one: the `actions/runner` package is
-downloaded once, checksum-checked, and unpacked into `runners/_bin/`. Every repository after
-that is copied from there.
 
-Each runner is told where this checkout is through `REVIEWER_HOME`, written into its own `.env`.
-That is what makes one checkout serve every repository.
+### Limites
 
-Then comment `/review` on a pull request of that repository.
-
-**Remove** takes the workflow file off the default branch, stops the runner and unregisters it.
-
-Same thing without the page:
-
-```bash
-node src/provisioning/sync-repos.mjs add owner/name
-node src/provisioning/sync-repos.mjs list
-node src/provisioning/sync-repos.mjs remove owner/name
-node src/provisioning/sync-repos.mjs            # re-check everything, restart runners that died
-node src/provisioning/runner-lifecycle.mjs log owner/name
-```
-
-`repos.yml` is the registry, `sync-repos.mjs` is its only writer, and every command is
-idempotent. Run the bare `sync` after a reboot to bring the runners back up.
-
-### Before you expose it
-
-`web/server.mjs` binds `127.0.0.1` and nothing else. It has no login, and it can reach a token
-that writes workflow files on your company repositories, so a workflow file is arbitrary code
-execution on this machine. Do not put it on `0.0.0.0`, behind a tunnel, or on a shared host.
-Host and Origin are checked to keep a web page you visit from driving it through DNS rebinding.
-
-### Limits of this mode
-
-- One runner process per repository, each with its own copy of the runner package. That is about
-  700 MB per repository, plus 220 MB for the cached tarball in `runners/.cache/`.
-- Runners are plain background processes, not services. They die with the machine, `sync` brings
-  them back. Use systemd if you want them at boot.
-- Nothing serialises reviews across repositories, the runners will happily work in parallel.
-
-## Limits
-
-- The quick tunnel is ephemeral and capped at 200 concurrent requests. Fine for a sandbox, wrong for production.
-- Leave the terminal open. Close it, everything stops.
-- On a very large diff, one pass samples rather than covers.
-
-## Licence
-
-MIT.
+- Le tunnel éphémère est plafonné à 200 requêtes concurrentes. Bien pour un bac à sable, pas
+  pour un très gros trafic.
+- `setup-demo.sh` : terminal ouvert, le fermer arrête 
+- Sur un très gros diff, une passe échantillonne plutôt que de tout couvrir.

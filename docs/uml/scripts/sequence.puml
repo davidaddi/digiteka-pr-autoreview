@@ -1,0 +1,63 @@
+@startuml sequence
+
+actor Admin
+participant "SyncRepos\nsync-repos.mjs" as Sync
+participant "RepoRegistry\n(repos.yml)" as Reg
+participant "HooksStore\n(webhooks.json)" as Store
+participant "TunnelLifecycle" as Tunnel
+participant "GitHub/GitLab\nWebhook API" as API
+
+== Enregistrement d'un repo (setup.sh / add) ==
+
+Admin -> Sync : add("owner/name" ou "gitlab@host:group/project")
+Sync -> Reg : upsert(entry, status=pending)
+Admin -> Sync : sync(target?)
+Sync -> Reg : read()
+Sync -> Tunnel : url()
+Tunnel --> Sync : https://<tunnel>.trycloudflare.com
+Sync -> Store : get(key)
+alt hook déjà connu
+  Sync -> API : GET webhook(id)
+  Sync -> API : PUT/PATCH url si changée
+else pas de hook connu
+  Sync -> API : POST créer webhook(url, secret)
+end
+Sync -> Store : set(key, {hookId, url})
+Sync -> Reg : upsert(entry, status=active)
+Sync --> Admin : "webhook <id> créé/re-pointé"
+
+== Exécution (commentaire /review sur une PR/MR) ==
+
+actor Utilisateur
+participant "GitHub/GitLab" as Forge
+participant "Receiver\nreceiver.mjs" as Recv
+participant "Dispatcher\ndispatch.mjs" as Disp
+participant "Hermes\n(CLI + Claude Code)" as Hermes
+participant "ReviewScript\nreview.sh" as Rev
+participant "Orchestrator +\nFinders/Skeptic/Judge" as Orch
+participant "Publisher\ngithub.mjs / gitlab.mjs" as Pub
+
+Utilisateur -> Forge : commente "/review" sur la PR/MR
+Forge -> Recv : POST / (payload signé HMAC ou X-Gitlab-Token)
+Recv -> Recv : signatureMatches() / tokenMatches()
+Recv -> Recv : githubEvent()/gitlabEvent() -> {repo, host, pr, command}
+Recv -> Reg : repo actif dans repos.yml ?
+Recv -> Forge : vérifie le rôle de l'auteur (Developer+)
+Recv --> Forge : 202 queued
+Recv -> Forge : réaction 👀 sur le commentaire
+Recv -> Recv : enqueue(event) (une chaîne par repo#pr)
+Recv -> Disp : dispatch(event)
+Disp -> Disp : écrit .runtime.<repo>-<pr>.env (token, forge, host)
+Disp -> Hermes : spawn -z "<prompt orchestration>" --yolo -c "pr-<repo>-<pr>"
+Hermes -> Rev : bash review.sh <pr> review
+Rev -> Rev : diff -> runs/.pr.diff
+Rev -> Orch : fan-out finders -> skeptic -> judge
+Orch --> Rev : runs/.findings.json
+Rev --> Hermes : exit 0
+Hermes -> Pub : node github.mjs/gitlab.mjs post <pr>
+Pub -> Forge : publie commentaires + statut
+Pub -> Disp : touche le marqueur de publication
+Disp --> Recv : résolu (marqueur présent)
+Forge --> Utilisateur : review postée sur les lignes
+
+@enduml

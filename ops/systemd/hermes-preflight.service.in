@@ -1,0 +1,39 @@
+# hermes-pr-review -- step 1 of 3: preflight
+#
+# TEMPLATE. ops/install-systemd.sh renders it into ~/.config/systemd/user/ with the
+# placeholders below filled in. Edit this file, not the rendered copy, then re-install.
+#
+#   checkout   @PR_REVIEW_ROOT@
+#   PATH       @PR_REVIEW_PATH@
+#   rendered   @RENDERED_AT@
+#
+# Type=oneshot with RemainAfterExit=yes. RemainAfterExit is not decoration here: without it
+# the unit falls back to inactive the instant the script exits, and every Requires= on it
+# would try to start it again. With it the unit stays 'active (exited)' and reads as
+# "this machine has been checked", which is what the tunnel and the receiver depend on.
+#
+# It is deliberately not Restart=. A failed start job cancels the dependent jobs, and an
+# automatic restart that later succeeds does not bring them back -- the chain would sit dead
+# behind a unit that says 'active'. The one failure that does fix itself, the network not
+# being up yet at boot, is retried inside ops/preflight.sh instead.
+
+[Unit]
+Description=hermes-pr-review preflight (tools, hermes/claude credentials, .env, repos.yml, GitHub token)
+Documentation=file://@PR_REVIEW_ROOT@/ops/README.md
+PartOf=hermes-webhook.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@PR_REVIEW_ROOT@
+Environment=PR_REVIEW_ROOT=@PR_REVIEW_ROOT@
+# systemd does not read .bashrc, .profile or nvm's shell hook. This PATH was resolved by
+# ops/install-systemd.sh from the shell it was run in, and is the only reason node (nvm),
+# hermes and claude (~/.local/bin) are reachable from here.
+Environment=PATH=@PR_REVIEW_PATH@
+# Optional, absent by default, gitignored: per-instance overrides that do not belong in
+# .env. The leading '-' means "start anyway if it does not exist".
+EnvironmentFile=-@PR_REVIEW_ROOT@/ops/systemd.env
+ExecStart=@PR_REVIEW_ROOT@/ops/preflight.sh
+# Long enough to cover the GitHub retries in preflight.sh (6 x 10s) plus slack.
+TimeoutStartSec=180

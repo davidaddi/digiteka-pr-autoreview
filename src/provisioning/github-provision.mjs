@@ -11,7 +11,7 @@ export function loadEnv(file = join(ROOT, '.env')) {
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     const at = line.indexOf('=')
     if (at < 1 || line.trimStart().startsWith('#')) continue
-    const value = line.slice(at + 1).trim().replace(/^"(.*)"$/s, '$1')
+    const value = line.slice(at + 1).trim().replace(/^"(.*)"$/s, '$1').replace(/^'(.*)'$/s, '$1')
     process.env[line.slice(0, at).trim()] ??= value
   }
 }
